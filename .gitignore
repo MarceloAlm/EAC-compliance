@@ -1,0 +1,17 @@
+# Ignore private keys and certificates
+*.key
+*.pem
+*.der
+*.crt
+*.p12
+
+# Ignore binary EFI files
+*.efi
+*.ko
+*.zst
+
+# Backup and temp files
+*~
+*.swp
+*.bak
+.DS_Store
