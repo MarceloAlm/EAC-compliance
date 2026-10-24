@@ -29,6 +29,7 @@ A comprehensive, production-grade guide and standalone verification tool to conf
   - [Phase 3: Shim Boot Chain & MOK Infrastructure](#phase-3-shim-boot-chain--mok-infrastructure)
   - [Phase 4: Install & Validate DKMS Modules (NVIDIA & Gaming Drivers)](#phase-4-install--validate-dkms-modules-nvidia--gaming-drivers)
   - [Phase 5: Enabling Kernel Lockdown](#phase-5-enabling-kernel-lockdown)
+  - [Alternative Option: Dual-Boot UKI Profiles (Desktop/Hibernation vs. Gaming/Lockdown)](#alternative-option-dual-boot-uki-profiles-desktophibernation-vs-gaminglockdown)
 - [4. Automated Direct Kernel Auditor (`check-eac-compliance.sh`)](#4-automated-direct-kernel-auditor-check-eac-compliancesh)
 - [5. Post-Boot Verification Checklist](#5-post-boot-verification-checklist)
 - [6. Maintenance: How to Re-sign and Rebuild DKMS Modules](#6-maintenance-how-to-re-sign-and-rebuild-dkms-modules)
@@ -355,6 +356,85 @@ With all out-of-tree modules signed and validated by the `.machine` keyring, act
    sudo mkinitcpio -P
    sudo reboot
    ```
+
+---
+
+### Alternative Option: Dual-Boot UKI Profiles (Desktop/Hibernation vs. Gaming/Lockdown)
+
+Because Linux Kernel Lockdown in `[integrity]` mode strictly blocks resume from hibernation (`LOCKDOWN_HIBERNATION`), users who rely on daily **hibernation** can configure `systemd-boot` with **two independent UKI entries**:
+* **Default Entry (`arch-linux.efi`):** Everyday desktop productivity with active swap/hibernation support (no `lockdown=integrity`).
+* **Gaming Entry (`arch-linux-lockdown.efi`):** Fully hardened environment for anti-cheat games with `lockdown=integrity`, `intel_iommu=on iommu=pt`, `efi=disable_early_pci_dma`, and `kexec_load_disabled=1`.
+
+#### 1. Structure `/etc/cmdline.d/` with an Isolated Subdirectory
+
+`mkinitcpio` evaluates `*.conf` files inside `/etc/cmdline.d/` non-recursively. You can isolate gaming parameters inside a `lockdown/` subfolder:
+
+1. **Base system and hibernation parameters in root `/etc/cmdline.d/` (Default Entry):**
+   ```bash
+   # System base
+   cat << 'EOF' | sudo tee /etc/cmdline.d/10-root.conf
+   root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash
+   EOF
+
+   # Hibernation / Swapfile
+   cat << 'EOF' | sudo tee /etc/cmdline.d/20-resume.conf
+   resume=UUID=<YOUR-SWAP-UUID> resume_offset=<YOUR-SWAPFILE-OFFSET>
+   EOF
+
+   # Base IOMMU
+   cat << 'EOF' | sudo tee /etc/cmdline.d/30-security.conf
+   intel_iommu=on iommu=pt
+   EOF
+   ```
+
+2. **Create the `lockdown/` subfolder with root symlink and security parameters:**
+   ```bash
+   sudo mkdir -p /etc/cmdline.d/lockdown
+
+   # Symlink to reuse root parameters without duplication
+   sudo ln -sf /etc/cmdline.d/10-root.conf /etc/cmdline.d/lockdown/10-root.conf
+
+   # Hardened parameters & Kernel Lockdown
+   cat << 'EOF' | sudo tee /etc/cmdline.d/lockdown/30-security.conf
+   lockdown=integrity intel_iommu=on iommu=pt efi=disable_early_pci_dma kexec_load_disabled=1
+   EOF
+   ```
+
+#### 2. Configure Presets in `/etc/mkinitcpio.d/linux.preset`
+
+Edit `/etc/mkinitcpio.d/linux.preset` (`sudo vim /etc/mkinitcpio.d/linux.preset`):
+
+```ini
+ALL_kver="/boot/vmlinuz-linux"
+
+PRESETS=('default' 'lockdown')
+
+# --- Entry 1: Desktop / Hibernation (Default) ---
+default_uki="/boot/EFI/Linux/arch-linux.efi"
+default_options="--splash /boot/loader/background.bmp"
+
+# --- Entry 2: Gaming / EAC Anti-Cheat (Lockdown) ---
+lockdown_uki="/boot/EFI/Linux/arch-linux-lockdown.efi"
+lockdown_options="--splash /boot/loader/background.bmp --cmdline /etc/cmdline.d/lockdown"
+```
+
+#### 3. Build, Sign, and Set Default Boot
+
+```bash
+# 1. Compile both UKI images
+sudo mkinitcpio -P
+
+# 2. Register lockdown UKI in sbctl database (if not auto-signed by post-hook)
+sudo sbctl sign -s /boot/EFI/Linux/arch-linux-lockdown.efi
+
+# 3. Ensure default boot points to the hibernation image
+sudo bootctl set-default arch-linux.efi
+
+# 4. Verify detected boot entries
+bootctl list
+```
+
+When powering on your computer, the system boots into your desktop environment with working hibernation. When launching games requiring EAC v2, press the **Spacebar** during boot and select `Arch Linux (...~lockdown)`.
 
 ---
 

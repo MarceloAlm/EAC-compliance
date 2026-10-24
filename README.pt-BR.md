@@ -29,6 +29,7 @@ Este documento registra todas as configurações, referências oficiais, descobe
   - [Fase 3: Cadeia de Boot do Shim e Infraestrutura MOK](#fase-3-cadeia-de-boot-do-shim-e-infraestrutura-mok)
   - [Fase 4: Instalação e Validação dos Módulos DKMS (NVIDIA e Jogos)](#fase-4-instalação-e-validação-dos-módulos-dkms-nvidia-e-jogos)
   - [Fase 5: Ativação Definitiva do Kernel Lockdown](#fase-5-ativação-definitiva-do-kernel-lockdown)
+  - [Opção Alternativa: Perfil de Duplo Boot UKI (Desktop/Hibernação vs. Gaming/Lockdown)](#opção-alternativa-perfil-de-duplo-boot-uki-desktophibernação-vs-gaminglockdown)
 - [4. Auditor Automatizado de Kernel Direto (`check-eac-compliance.sh`)](#4-auditor-automatizado-de-kernel-direto-check-eac-compliancesh)
 - [5. Guia de Verificação Pós-Boot](#5-guia-de-verificação-pós-boot)
 - [6. Manutenção: Como Reassinar e Reconstruir Módulos DKMS](#6-manutenção-como-reassinar-e-reconstruir-módulos-dkms)
@@ -358,6 +359,85 @@ Com todos os módulos de terceiros devidamente assinados e validados pelo chavei
    sudo mkinitcpio -P
    sudo reboot
    ```
+
+---
+
+### Opção Alternativa: Perfil de Duplo Boot UKI (Desktop/Hibernação vs. Gaming/Lockdown)
+
+Como o Kernel Lockdown em modo `[integrity]` bloqueia a restauração de imagem em disco (`LOCKDOWN_HIBERNATION`), usuários que dependem da **hibernação** no dia a dia podem configurar o `systemd-boot` com **duas entradas UKI independentes**:
+* **Entrada Padrão (`arch-linux.efi`):** Uso diário para trabalho e produtividade com hibernação/swap ativo (sem `lockdown=integrity`).
+* **Entrada Gaming (`arch-linux-lockdown.efi`):** Ambiente blindado para jogos com `lockdown=integrity`, `intel_iommu=on iommu=pt`, `efi=disable_early_pci_dma` e `kexec_load_disabled=1`.
+
+#### 1. Estruturar `/etc/cmdline.d/` com Subdiretório Isolado
+
+O `mkinitcpio` avalia de forma não-recursiva os arquivos `*.conf` dentro de `/etc/cmdline.d/`. Podemos isolar a entrada de jogos em uma subpasta `lockdown/`:
+
+1. **Parâmetros base e de hibernação na raiz de `/etc/cmdline.d/` (Entrada Padrão):**
+   ```bash
+   # Base do sistema
+   cat << 'EOF' | sudo tee /etc/cmdline.d/10-root.conf
+   root=PARTUUID=<SEU-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash
+   EOF
+
+   # Hibernação / Swapfile
+   cat << 'EOF' | sudo tee /etc/cmdline.d/20-resume.conf
+   resume=UUID=<SEU-SWAP-UUID> resume_offset=<SEU-OFFSET-SWAPFILE>
+   EOF
+
+   # IOMMU base
+   cat << 'EOF' | sudo tee /etc/cmdline.d/30-security.conf
+   intel_iommu=on iommu=pt
+   EOF
+   ```
+
+2. **Criar a subpasta `lockdown/` com symlink da raiz e parâmetros de segurança:**
+   ```bash
+   sudo mkdir -p /etc/cmdline.d/lockdown
+
+   # Link simbólico para reaproveitar os parâmetros da raiz sem duplicação
+   sudo ln -sf /etc/cmdline.d/10-root.conf /etc/cmdline.d/lockdown/10-root.conf
+
+   # Parâmetros de segurança e Kernel Lockdown
+   cat << 'EOF' | sudo tee /etc/cmdline.d/lockdown/30-security.conf
+   lockdown=integrity intel_iommu=on iommu=pt efi=disable_early_pci_dma kexec_load_disabled=1
+   EOF
+   ```
+
+#### 2. Configurar os Presets no `/etc/mkinitcpio.d/linux.preset`
+
+Edite o arquivo `/etc/mkinitcpio.d/linux.preset` (`sudo vim /etc/mkinitcpio.d/linux.preset`):
+
+```ini
+ALL_kver="/boot/vmlinuz-linux"
+
+PRESETS=('default' 'lockdown')
+
+# --- Entrada 1: Desktop / Hibernação (Padrão) ---
+default_uki="/boot/EFI/Linux/arch-linux.efi"
+default_options="--splash /boot/loader/background.bmp"
+
+# --- Entrada 2: Gaming / EAC Anti-Cheat (Lockdown) ---
+lockdown_uki="/boot/EFI/Linux/arch-linux-lockdown.efi"
+lockdown_options="--splash /boot/loader/background.bmp --cmdline /etc/cmdline.d/lockdown"
+```
+
+#### 3. Compilar, Assinar e Definir o Padrão
+
+```bash
+# 1. Compilar ambas as imagens UKI
+sudo mkinitcpio -P
+
+# 2. Registrar a imagem de lockdown no sbctl (se ainda não assinado automaticamente)
+sudo sbctl sign -s /boot/EFI/Linux/arch-linux-lockdown.efi
+
+# 3. Definir a entrada com hibernação como inicialização padrão no systemd-boot
+sudo bootctl set-default arch-linux.efi
+
+# 4. Verificar as entradas detectadas
+bootctl list
+```
+
+Ao ligar o computador, o sistema entra automaticamente na entrada com hibernação. Quando desejar jogar títulos protegidos por anti-cheat, pressione a tecla **Espaço** durante o boot e selecione a entrada `Arch Linux (...~lockdown)`.
 
 ---
 
