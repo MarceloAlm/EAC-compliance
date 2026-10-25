@@ -366,7 +366,10 @@ Com todos os módulos de terceiros devidamente assinados e validados pelo chavei
 
 Como o Kernel Lockdown em modo `[integrity]` bloqueia a restauração de imagem em disco (`LOCKDOWN_HIBERNATION`), usuários que dependem da **hibernação** no dia a dia podem configurar o `systemd-boot` com **duas entradas UKI independentes**:
 * **Entrada Padrão (`arch-linux.efi`):** Uso diário para trabalho e produtividade com hibernação/swap ativo (sem `lockdown=integrity`).
-* **Entrada Gaming (`arch-linux-lockdown.efi`):** Ambiente blindado para jogos com `lockdown=integrity`, `intel_iommu=on iommu=pt`, `efi=disable_early_pci_dma` e `kexec_load_disabled=1`.
+* **Entrada Gaming (`arch-linux-lockdown.efi`):** Ambiente blindado para jogos com `lockdown=integrity`, `intel_iommu=on iommu=pt` e `efi=disable_early_pci_dma`.
+
+> [!NOTE]
+> O bloqueio de `kexec` (`kernel.kexec_load_disabled = 1`) permanece ativo no `/etc/sysctl.d/99-security.conf` (Fase 2) para todo o sistema. Ele não é passado no `cmdline` porque o kernel Linux upstream gerencia essa trava de segurança exclusivamente via `sysctl`.
 
 #### 1. Estruturar `/etc/cmdline.d/` com Subdiretório Isolado
 
@@ -399,7 +402,7 @@ O `mkinitcpio` avalia de forma não-recursiva os arquivos `*.conf` dentro de `/e
 
    # Parâmetros de segurança e Kernel Lockdown
    cat << 'EOF' | sudo tee /etc/cmdline.d/lockdown/30-security.conf
-   lockdown=integrity intel_iommu=on iommu=pt efi=disable_early_pci_dma kexec_load_disabled=1
+   lockdown=integrity intel_iommu=on iommu=pt efi=disable_early_pci_dma
    EOF
    ```
 

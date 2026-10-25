@@ -363,7 +363,10 @@ With all out-of-tree modules signed and validated by the `.machine` keyring, act
 
 Because Linux Kernel Lockdown in `[integrity]` mode strictly blocks resume from hibernation (`LOCKDOWN_HIBERNATION`), users who rely on daily **hibernation** can configure `systemd-boot` with **two independent UKI entries**:
 * **Default Entry (`arch-linux.efi`):** Everyday desktop productivity with active swap/hibernation support (no `lockdown=integrity`).
-* **Gaming Entry (`arch-linux-lockdown.efi`):** Fully hardened environment for anti-cheat games with `lockdown=integrity`, `intel_iommu=on iommu=pt`, `efi=disable_early_pci_dma`, and `kexec_load_disabled=1`.
+* **Gaming Entry (`arch-linux-lockdown.efi`):** Fully hardened environment for anti-cheat games with `lockdown=integrity`, `intel_iommu=on iommu=pt`, and `efi=disable_early_pci_dma`.
+
+> [!NOTE]
+> The `kexec` block (`kernel.kexec_load_disabled = 1`) remains enforced globally via `/etc/sysctl.d/99-security.conf` (Phase 2). It is not passed on the kernel `cmdline` because upstream Linux parses and enforces this setting strictly via `sysctl`.
 
 #### 1. Structure `/etc/cmdline.d/` with an Isolated Subdirectory
 
@@ -396,7 +399,7 @@ Because Linux Kernel Lockdown in `[integrity]` mode strictly blocks resume from 
 
    # Hardened parameters & Kernel Lockdown
    cat << 'EOF' | sudo tee /etc/cmdline.d/lockdown/30-security.conf
-   lockdown=integrity intel_iommu=on iommu=pt efi=disable_early_pci_dma kexec_load_disabled=1
+   lockdown=integrity intel_iommu=on iommu=pt efi=disable_early_pci_dma
    EOF
    ```
 
