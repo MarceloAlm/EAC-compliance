@@ -246,6 +246,9 @@ if [ -f /proc/cmdline ]; then
     if printf "%s" "$CMDLINE_ACTUAL" | grep -q "intel_iommu=on"; then
         report_pass "'intel_iommu=on' parameter present in the active command line"
     fi
+    if printf "%s" "$CMDLINE_ACTUAL" | grep -q "amd_iommu=on"; then
+        report_pass "'amd_iommu=on' parameter present in the active command line"
+    fi
 fi
 
 # 10. Summary
