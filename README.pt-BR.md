@@ -50,6 +50,17 @@ O EAC Linux v2 abandona drivers de ring-0 invasivos (estilo Windows) em favor de
 6. **IOMMU Habilitado** (Intel VT-d ou AMD-Vi com `iommu=pt`), impedindo ataques DMA de periféricos físicos.
 7. **LSM BPF Habilitado** (`CONFIG_BPF_LSM=y`), permitindo auditoria das sondas de integridade do anti-cheat via Security Module.
 
+> [!WARNING]
+> **Impactos e Restrições Práticas do Kernel Lockdown (`[integrity]`):**  
+> Ao ativar `lockdown=integrity`, o kernel bloqueia permanentemente interfaces de usuário que permitam modificar o anel 0 (Ring-0), mesmo sob privilégios de `root` ou `sudo`:
+> * **Hibernação (`Suspend-to-Disk`):** Bloqueada por design (`LOCKDOWN_HIBERNATION`). O kernel oculta o estado `disk` de `/sys/power/state` para prevenir restauração de imagens de memória adulteradas via swap. *(A Suspensão em RAM continua funcionando normalmente)*.
+> * **Módulos DKMS não assinados:** Bloqueio imediato (`LOCKDOWN_MODULE_SIGNATURE`) de qualquer driver sem assinatura criptográfica reconhecida na keyring do kernel (como NVIDIA, VirtualBox, v4l2loopback).
+> * **Acesso à Memória Física:** `/dev/mem`, `/dev/kmem` e `/dev/port` são completamente desativados (`LOCKDOWN_DEV_MEM`).
+> * **Escrita em MSRs (`/dev/cpu/*/msr`):** Ferramentas de undervolt, overclock e ajuste fino de energia de CPU (ex.: `intel-undervolt`, `throttled`, `ryzenadj`) deixam de funcionar.
+> * **Depuração Avançada:** O `debugfs` (`/sys/kernel/debug`) e `/proc/kcore` são desativados ou severamente restritos; sondas de `kprobes`/`ftrace` para modificação de código são bloqueadas.
+> 
+> Caso você dependa de **hibernação** no seu uso diário, consulte a seção [Perfil de Duplo Boot UKI](#opção-alternativa-perfil-de-duplo-boot-uki-desktophibernação-vs-gaminglockdown) deste guia para manter uma entrada de produtividade com hibernação e outra blindada exclusiva para jogos.
+
 ---
 
 ## 2. A Arquitetura de Confiança de Duplo Chaveiro (O Problema e a Solução)
@@ -236,7 +247,7 @@ Com a base validada com sucesso, passe com total segurança para a Fase 3 para c
 
 Antes de instalar os drivers de vídeo proprietários, configuramos os certificados MOK e a cadeia de inicialização com o preloader Shim.
 
-1. **Gerar o Par de Chaves MOK Dedicado:**
+1. **Gerar o Par de Chaves MOK Dedicado e Proteger Permissões:**
    ```bash
    sudo openssl req -new -x509 -newkey rsa:2048 -nodes -days 3650 \
      -subj "/CN=Arch Linux Kernel Modules MOK/" \
@@ -244,6 +255,9 @@ Antes de instalar os drivers de vídeo proprietários, configuramos os certifica
      -outform DER -out /etc/dkms/mok.der
 
    sudo openssl x509 -in /etc/dkms/mok.der -inform DER -out /etc/dkms/mok.pem
+
+   # Restringe a permissão da chave privada estritamente ao root (600)
+   sudo chmod 600 /etc/dkms/mok.key
    ```
 
 2. **Configurar o Framework de Assinatura do DKMS:**
@@ -292,20 +306,45 @@ Antes de instalar os drivers de vídeo proprietários, configuramos os certifica
    sudo sbctl sign -s /boot/EFI/systemd/mmx64.efi
    ```
 
-6. **Criar o Executável `grubx64.efi` a Partir do [systemd-boot](https://wiki.archlinux.org/title/Systemd-boot):**
+6. **Criar e Cadastrar o Executável `grubx64.efi` no `sbctl`:**
+   O `shim` procura estritamente por um binário chamado `grubx64.efi` no mesmo diretório. Copie o binário a partir de `/usr/lib/systemd/boot/efi/systemd-bootx64.efi` para garantir que o arquivo seja originado sem assinaturas prévias, permitindo que o `sbctl sign -s` realize a assinatura digital e o registre obrigatoriamente no banco de dados (`/var/lib/sbctl/files.json`):
    ```bash
-   sudo cp /boot/EFI/systemd/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi
+   sudo cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi
    sudo sbctl sign -s /boot/EFI/systemd/grubx64.efi
    ```
+   *(Confirme que ele foi registrado no banco executando `sudo sbctl list-files`)*.
 
-7. **Adicionar a Entrada do Shim na NVRAM com `efibootmgr`:**
+7. **Criar o Hook do Pacman para Atualização Automática do `systemd-boot`:**
+   Como o utilitário `bootctl update` só atualiza os caminhos padrão da UEFI e desconhece o `grubx64.efi`, configure um hook pós-transação do pacman para sincronizar o arquivo a cada upgrade do pacote `systemd`:
+   ```bash
+   sudo mkdir -p /etc/pacman.d/hooks
+   cat << 'EOF' | sudo tee /etc/pacman.d/hooks/95-systemd-boot.hook
+   [Trigger]
+   Type = Package
+   Operation = Upgrade
+   Target = systemd
+
+   [Action]
+   Description = Atualizando systemd-boot e sincronizando grubx64.efi para o Shim...
+   When = PostTransaction
+   Exec = /bin/sh -c "/usr/bin/bootctl update && /usr/bin/cp -f /boot/EFI/systemd/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi"
+   EOF
+   ```
+
+   > [!TIP]
+   > **Como a automação da assinatura opera:**  
+   > 1. Durante um upgrade do `systemd`, o hook `95-systemd-boot.hook` roda o `bootctl update` e clona a versão atualizada para `grubx64.efi`.  
+   > 2. No final da mesma transação do pacman, o hook nativo do sistema `/usr/share/libalpm/hooks/zz-sbctl.hook` executa `sbctl sign-all -g`.  
+   > 3. Como o `grubx64.efi` e o `systemd-bootx64.efi` estão ambos cadastrados no `files.json`, o `sbctl` assina ambos os binários de forma 100% transparente antes do reboot, prevenindo qualquer falha de *Security Policy Violation*.
+
+8. **Adicionar a Entrada do Shim na NVRAM com `efibootmgr`:**
    ```bash
    sudo efibootmgr --create --disk /dev/nvme0n1 --part 1 \
      --label "Arch Linux (Shim MOK)" \
      --loader '\EFI\systemd\shimx64.efi'
    ```
 
-8. **Matrícula na Tela Azul do MokManager (No Reboot):**
+9. **Matrícula na Tela Azul do MokManager (No Reboot):**
    Reinicie o computador: `sudo reboot`. O Shim detectará a chave pendente e abrirá a tela azul do **MokManager**:
    * Pressione qualquer tecla para interromper a contagem regressiva.
    * Selecione **Enroll MOK** -> **Continue** (ou *View key 0* para conferir `Arch Linux Kernel Modules MOK`).

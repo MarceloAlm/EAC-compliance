@@ -50,6 +50,17 @@ Unlike Windows ring-0 anti-cheat drivers, EAC Linux v2 leverages an on-demand **
 6. **IOMMU Enabled** (`intel_iommu=on iommu=pt` or AMD-Vi equivalent), blocking physical DMA attacks from PCIe/Thunderbolt peripherals.
 7. **LSM BPF Enabled** (`CONFIG_BPF_LSM=y`), allowing the anti-cheat security module to audit eBPF hooks.
 
+> [!WARNING]
+> **Practical Impacts and Restrictions of Kernel Lockdown (`[integrity]`):**  
+> Enabling `lockdown=integrity` permanently disables any user-space interface capable of altering the executing kernel image (Ring-0), even under `root` or `sudo` privileges:
+> * **Hibernation (`Suspend-to-Disk`):** Disabled by design (`LOCKDOWN_HIBERNATION`). The kernel hides the `disk` state from `/sys/power/state` to prevent resuming from untrusted/tampered swap images. *(Suspend-to-RAM continues to function normally)*.
+> * **Unsigned DKMS Modules:** Immediate rejection (`LOCKDOWN_MODULE_SIGNATURE`) of any out-of-tree kernel module lacking a cryptographic signature trusted by the kernel keyring (e.g., NVIDIA, VirtualBox, v4l2loopback).
+> * **Physical Memory Access:** `/dev/mem`, `/dev/kmem`, and `/dev/port` are entirely disabled (`LOCKDOWN_DEV_MEM`).
+> * **MSR Register Writes (`/dev/cpu/*/msr`):** CPU undervolting, overclocking, and custom power management utilities (e.g., `intel-undervolt`, `throttled`, `ryzenadj`) will fail to apply tweaks.
+> * **Advanced Tracing & Debugging:** `debugfs` (`/sys/kernel/debug`) and `/proc/kcore` are disabled or heavily restricted; code-patching `kprobes`/`ftrace` hooks are blocked.
+> 
+> If you rely on **hibernation** for daily productivity, see the [UKI Dual-Boot Profile](#alternative-option-uki-dual-boot-profile-desktop-hibernation-vs-gaming-lockdown) section in this guide to maintain a standard entry with hibernation alongside an isolated hardened entry for EAC gaming.
+
 ---
 
 ## 2. The Dual-Keyring Architecture (Problem & Solution)
@@ -236,7 +247,7 @@ With your base Secure Boot and modular UKI validated, proceed to Phase 3 to conf
 
 Before installing GPU drivers, set up the cryptographic MOK keys and configure the Shim preloader boot chain.
 
-1. **Generate Dedicated MOK Keypair:**
+1. **Generate Dedicated MOK Keypair and Secure Permissions:**
    ```bash
    sudo openssl req -new -x509 -newkey rsa:2048 -nodes -days 3650 \
      -subj "/CN=Arch Linux Kernel Modules MOK/" \
@@ -244,6 +255,9 @@ Before installing GPU drivers, set up the cryptographic MOK keys and configure t
      -outform DER -out /etc/dkms/mok.der
 
    sudo openssl x509 -in /etc/dkms/mok.der -inform DER -out /etc/dkms/mok.pem
+
+   # Restrict private key permissions strictly to root (600)
+   sudo chmod 600 /etc/dkms/mok.key
    ```
 
 2. **Configure DKMS Signing Framework:**
@@ -291,20 +305,45 @@ Before installing GPU drivers, set up the cryptographic MOK keys and configure t
    sudo sbctl sign -s /boot/EFI/systemd/mmx64.efi
    ```
 
-6. **Prepare `grubx64.efi` Payload ([systemd-boot](https://wiki.archlinux.org/title/Systemd-boot)):**
+6. **Create and Register `grubx64.efi` Payload in `sbctl`:**
+   Shim strictly looks for a secondary bootloader named `grubx64.efi` in the same directory. Copy the raw binary directly from `/usr/lib/systemd/boot/efi/systemd-bootx64.efi` to ensure it starts without prior signatures, allowing `sbctl sign -s` to sign it and register it into the signing database (`/var/lib/sbctl/files.json`):
    ```bash
-   sudo cp /boot/EFI/systemd/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi
+   sudo cp /usr/lib/systemd/boot/efi/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi
    sudo sbctl sign -s /boot/EFI/systemd/grubx64.efi
    ```
+   *(Confirm registration in the database with `sudo sbctl list-files`)*.
 
-7. **Create NVRAM Boot Entry:**
+7. **Create Pacman Hook for Automated `systemd-boot` Synchronization:**
+   Because `bootctl update` only updates default UEFI paths and is unaware of `grubx64.efi`, configure a post-transaction pacman hook to keep `grubx64.efi` in sync on every `systemd` package upgrade:
+   ```bash
+   sudo mkdir -p /etc/pacman.d/hooks
+   cat << 'EOF' | sudo tee /etc/pacman.d/hooks/95-systemd-boot.hook
+   [Trigger]
+   Type = Package
+   Operation = Upgrade
+   Target = systemd
+
+   [Action]
+   Description = Atualizando systemd-boot e sincronizando grubx64.efi para o Shim...
+   When = PostTransaction
+   Exec = /bin/sh -c "/usr/bin/bootctl update && /usr/bin/cp -f /boot/EFI/systemd/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi"
+   EOF
+   ```
+
+   > [!TIP]
+   > **How automated signature verification operates:**  
+   > 1. During a `systemd` package upgrade, `95-systemd-boot.hook` runs `bootctl update` and clones the updated binary to `grubx64.efi`.  
+   > 2. At the end of the pacman transaction, the native system hook `/usr/share/libalpm/hooks/zz-sbctl.hook` executes `sbctl sign-all -g`.  
+   > 3. Because both `grubx64.efi` and `systemd-bootx64.efi` are tracked in `files.json`, `sbctl` automatically re-signs both binaries before reboot, preventing any *Security Policy Violation* failures.
+
+8. **Create NVRAM Boot Entry:**
    ```bash
    sudo efibootmgr --create --disk /dev/nvme0n1 --part 1 \
      --label "Arch Linux (Shim MOK)" \
      --loader '\EFI\systemd\shimx64.efi'
    ```
 
-8. **Enroll MOK via MokManager on Reboot:**
+9. **Enroll MOK via MokManager on Reboot:**
    Reboot the system (`sudo reboot`). When the blue **MokManager** screen appears:
    * Press any key -> **Enroll MOK** -> **Continue** -> **Yes** -> Type your temporary password -> **Reboot**.
 

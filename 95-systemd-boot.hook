@@ -1,0 +1,9 @@
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = systemd
+
+[Action]
+Description = Atualizando systemd-boot e sincronizando grubx64.efi para o Shim...
+When = PostTransaction
+Exec = /bin/sh -c "/usr/bin/bootctl update && /usr/bin/cp -f /boot/EFI/systemd/systemd-bootx64.efi /boot/EFI/systemd/grubx64.efi"
