@@ -22,6 +22,7 @@ Este documento registra todas as configurações, referências oficiais, descobe
 ## Índice
 
 - [1. Requisitos Técnicos do Easy Anti-Cheat Linux v2](#1-requisitos-técnicos-do-easy-anti-cheat-linux-v2)
+  - [1.1 Matriz de Vetores de Defesa e Restrições Práticas](#11-matriz-de-vetores-de-defesa-e-restrições-práticas-no-sistema)
 - [2. A Arquitetura de Confiança de Duplo Chaveiro (O Problema e a Solução)](#2-a-arquitetura-de-confiança-de-duplo-chaveiro-o-problema-e-a-solução)
 - [3. Passo a Passo de Implementação Completa](#3-passo-a-passo-de-implementação-completa)
   - [Fase 1: Secure Boot Base com `sbctl`](#fase-1-secure-boot-base-com-sbctl)
@@ -50,16 +51,27 @@ O EAC Linux v2 abandona drivers de ring-0 invasivos (estilo Windows) em favor de
 6. **IOMMU Habilitado** (Intel VT-d ou AMD-Vi com `iommu=pt`), impedindo ataques DMA de periféricos físicos.
 7. **LSM BPF Habilitado** (`CONFIG_BPF_LSM=y`), permitindo auditoria das sondas de integridade do anti-cheat via Security Module.
 
+### 1.1. Matriz de Vetores de Defesa e Restrições Práticas no Sistema
+
+Cada requisito fecha um vetor de ataque específico, impondo restrições reais de operação ao administrador e usuário do sistema:
+
+| # | Requisito Técnico | Vetor de Defesa EAC | Consequência Prática no Sistema |
+| :--- | :--- | :--- | :--- |
+| **1** | **UEFI Secure Boot** (`SetupMode = 0`) | Impede carregamento de bootloaders, kernels ou binários EFI adulterados antes do SO. | **Binários não assinados não inicializam.** Pendrives de recuperação ou LiveUSBs genéricos sofrem `Security Violation`. |
+| **2** | **TPM 2.0 & Measured Boot** (PCRs 0–11) | Audita alterações em firmware, BIOS, kernel e `cmdline` através de medições criptográficas. | **LUKS via TPM fica sensível:** Qualquer update de BIOS ou edição de `cmdline` altera PCRs e exige senha mestra. Exige chip TPM 2.0 / fTPM. |
+| **3** | **Assinatura de Módulos** (`CONFIG_MODULE_SIG=y`) | Bloqueia injeção de drivers maliciosos ou rootkits no anel mais privilegiado (Ring-0). | **Módulos caseiros sem assinatura falham (`insmod`).** Todo driver DKMS (NVIDIA, VirtualBox, v4l2loopback) exige chave privada e assinatura no build. |
+| **4** | **Kernel Lockdown** (`[integrity]`) | Isola completamente a memória do kernel contra o espaço do usuário (mesmo com `root`/`sudo`). | **Hibernação bloqueada** (`LOCKDOWN_HIBERNATION`); `/dev/mem` desativado; escrita em MSRs bloqueada (**impede undervolt/overclock** como `throttled`/`ryzenadj`); `debugfs` restrito. |
+| **5** | **Bloqueio de `kexec`** (`kexec_load_disabled = 1`) | Impede salto direto entre kernels na RAM sem passar pela validação da BIOS/UEFI. | **Reboots rápidos via software (`systemctl kexec`) deixam de funcionar.** O computador é obrigado a passar pelo ciclo completo de boot frio pelo hardware. |
+| **6** | **Isolamento IOMMU** (`intel_iommu=on iommu=pt`) | Mitiga ataques DMA via hardware PCIe (ex.: *PCILeech*) ou portas Thunderbolt/USB4. | Tráfego de barramento passa por filtragem DMAR. Hotplug de periféricos externos de alta velocidade tem acesso direto à RAM bloqueado. |
+| **7** | **LSM BPF Habilitado** (`CONFIG_BPF_LSM=y`) | Permite ao EAC inspecionar e vetar chamadas de sistema em tempo real com programas eBPF. | **O EAC tem poder de veto em syscalls.** Depuradores de memória e ferramentas de engenharia reversa (GDB, Cheat Engine via Proton) são bloqueados ao inspecionar o jogo. |
+
 > [!WARNING]
-> **Impactos e Restrições Práticas do Kernel Lockdown (`[integrity]`):**  
-> Ao ativar `lockdown=integrity`, o kernel bloqueia permanentemente interfaces de usuário que permitam modificar o anel 0 (Ring-0), mesmo sob privilégios de `root` ou `sudo`:
-> * **Hibernação (`Suspend-to-Disk`):** Bloqueada por design (`LOCKDOWN_HIBERNATION`). O kernel oculta o estado `disk` de `/sys/power/state` para prevenir restauração de imagens de memória adulteradas via swap. *(A Suspensão em RAM continua funcionando normalmente)*.
-> * **Módulos DKMS não assinados:** Bloqueio imediato (`LOCKDOWN_MODULE_SIGNATURE`) de qualquer driver sem assinatura criptográfica reconhecida na keyring do kernel (como NVIDIA, VirtualBox, v4l2loopback).
-> * **Acesso à Memória Física:** `/dev/mem`, `/dev/kmem` e `/dev/port` são completamente desativados (`LOCKDOWN_DEV_MEM`).
-> * **Escrita em MSRs (`/dev/cpu/*/msr`):** Ferramentas de undervolt, overclock e ajuste fino de energia de CPU (ex.: `intel-undervolt`, `throttled`, `ryzenadj`) deixam de funcionar.
-> * **Depuração Avançada:** O `debugfs` (`/sys/kernel/debug`) e `/proc/kcore` são desativados ou severamente restritos; sondas de `kprobes`/`ftrace` para modificação de código são bloqueadas.
-> 
-> Caso você dependa de **hibernação** no seu uso diário, consulte a seção [Perfil de Duplo Boot UKI](#opção-alternativa-perfil-de-duplo-boot-uki-desktophibernação-vs-gaminglockdown) deste guia para manter uma entrada de produtividade com hibernação e outra blindada exclusiva para jogos.
+> **Checklist de Impacto no Uso Diário:**  
+> Antes de aplicar as configurações, atente-se aos recursos afetados no dia a dia:
+> * ⚠️ **Hibernação (`Suspend-to-Disk`):** Totalmente desativada pelo `lockdown=integrity`. Caso dependa da hibernação para trabalho, adote o perfil opcional de [Duplo Boot UKI](#opção-alternativa-perfil-de-duplo-boot-uki-desktophibernação-vs-gaminglockdown) para alternar entre uma entrada com hibernação e outra blindada para jogos.
+> * ⚠️ **Ajustes de CPU (Undervolt/Overclock):** Utilitários que gravam em MSRs (`/dev/cpu/*/msr`) deixam de funcionar no modo lockdown (ajustes finos devem ser feitos diretamente na BIOS).
+> * ⚠️ **Drivers DKMS de Terceiros:** Exigem a infraestrutura de chaveiro MOK descrita na Fase 3 para que a NVIDIA e máquinas virtuais funcionem.
+> * ⚠️ **Criptografia de Disco:** Em discos com auto-desbloqueio via TPM, mantenha sua *passphrase* de recuperação anotada de forma segura antes de realizar atualizações de firmware ou de kernel.
 
 ---
 

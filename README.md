@@ -22,6 +22,7 @@ A comprehensive, production-grade guide and standalone verification tool to conf
 ## Table of Contents
 
 - [1. Official EAC Linux v2 Requirements](#1-official-eac-linux-v2-requirements)
+  - [1.1 Defense Vector Matrix & Practical Restrictions](#11-defense-vector-matrix--practical-system-restrictions)
 - [2. The Dual-Keyring Architecture (Problem & Solution)](#2-the-dual-keyring-architecture-problem--solution)
 - [3. Step-by-Step Implementation](#3-step-by-step-implementation)
   - [Phase 1: Base Secure Boot with `sbctl`](#phase-1-base-secure-boot-with-sbctl)
@@ -50,16 +51,27 @@ Unlike Windows ring-0 anti-cheat drivers, EAC Linux v2 leverages an on-demand **
 6. **IOMMU Enabled** (`intel_iommu=on iommu=pt` or AMD-Vi equivalent), blocking physical DMA attacks from PCIe/Thunderbolt peripherals.
 7. **LSM BPF Enabled** (`CONFIG_BPF_LSM=y`), allowing the anti-cheat security module to audit eBPF hooks.
 
+### 1.1. Defense Vector Matrix & Practical System Restrictions
+
+Each requirement closes a specific attack vector, imposing concrete operational restrictions for administrators and end-users:
+
+| # | Technical Requirement | EAC Defense Vector | Practical System Consequence |
+| :--- | :--- | :--- | :--- |
+| **1** | **UEFI Secure Boot** (`SetupMode = 0`) | Blocks tampering with bootloaders, kernels, or EFI binaries before the OS launches. | **Unsigned binaries fail to boot.** Generic recovery LiveUSBs or unverified kernels trigger `Security Violation`. |
+| **2** | **TPM 2.0 & Measured Boot** (PCRs 0–11) | Audits firmware, BIOS, kernel, and `cmdline` alterations through cryptographic PCR logs. | **TPM-bound LUKS is sensitive:** Firmware updates or `cmdline` edits change PCRs, requiring manual recovery passphrase. Requires discrete or firmware TPM 2.0. |
+| **3** | **Module Signing** (`CONFIG_MODULE_SIG=y`) | Prevents injection of rootkits and malicious drivers into privileged Ring-0. | **Unsigned modules fail to load (`insmod`).** All out-of-tree DKMS drivers (NVIDIA, VirtualBox, v4l2loopback) mandate key enrollment and build-time signing. |
+| **4** | **Kernel Lockdown** (`[integrity]`) | Strictly isolates kernel memory and internal structures from user space (even from `root`/`sudo`). | **Hibernation disabled** (`LOCKDOWN_HIBERNATION`); `/dev/mem` disabled; MSR writes blocked (**breaks software undervolt/overclock** like `throttled`/`ryzenadj`); `debugfs` restricted. |
+| **5** | **Disable `kexec`** (`kexec_load_disabled = 1`) | Prevents in-RAM hot-jumping between kernels, bypassing firmware and PCR measurements. | **Fast software reboots (`systemctl kexec`) are disabled.** Cold hardware reboot cycle through UEFI is mandatory. |
+| **6** | **IOMMU Isolation** (`intel_iommu=on iommu=pt`) | Blocks hardware DMA attacks via PCIe devices (e.g., *PCILeech*) or external Thunderbolt/USB4 ports. | All bus traffic is mediated by DMAR page tables. High-speed external hotplug devices have direct RAM access blocked. |
+| **7** | **LSM BPF Enabled** (`CONFIG_BPF_LSM=y`) | Empowers EAC to audit and veto suspicious syscalls in real time using verified eBPF probes. | **EAC holds syscall veto authority.** Memory debuggers and reverse-engineering tools (GDB, Cheat Engine via Proton) are intercepted when inspecting game memory. |
+
 > [!WARNING]
-> **Practical Impacts and Restrictions of Kernel Lockdown (`[integrity]`):**  
-> Enabling `lockdown=integrity` permanently disables any user-space interface capable of altering the executing kernel image (Ring-0), even under `root` or `sudo` privileges:
-> * **Hibernation (`Suspend-to-Disk`):** Disabled by design (`LOCKDOWN_HIBERNATION`). The kernel hides the `disk` state from `/sys/power/state` to prevent resuming from untrusted/tampered swap images. *(Suspend-to-RAM continues to function normally)*.
-> * **Unsigned DKMS Modules:** Immediate rejection (`LOCKDOWN_MODULE_SIGNATURE`) of any out-of-tree kernel module lacking a cryptographic signature trusted by the kernel keyring (e.g., NVIDIA, VirtualBox, v4l2loopback).
-> * **Physical Memory Access:** `/dev/mem`, `/dev/kmem`, and `/dev/port` are entirely disabled (`LOCKDOWN_DEV_MEM`).
-> * **MSR Register Writes (`/dev/cpu/*/msr`):** CPU undervolting, overclocking, and custom power management utilities (e.g., `intel-undervolt`, `throttled`, `ryzenadj`) will fail to apply tweaks.
-> * **Advanced Tracing & Debugging:** `debugfs` (`/sys/kernel/debug`) and `/proc/kcore` are disabled or heavily restricted; code-patching `kprobes`/`ftrace` hooks are blocked.
-> 
-> If you rely on **hibernation** for daily productivity, see the [UKI Dual-Boot Profile](#alternative-option-uki-dual-boot-profile-desktop-hibernation-vs-gaming-lockdown) section in this guide to maintain a standard entry with hibernation alongside an isolated hardened entry for EAC gaming.
+> **Daily Productivity Impact Checklist:**  
+> Before applying these configurations, review the affected operational features:
+> * ⚠️ **Hibernation (`Suspend-to-Disk`):** Permanently disabled under `lockdown=integrity`. If your daily workflow depends on hibernation, use the optional [UKI Dual-Boot Profile](#alternative-option-uki-dual-boot-profile-desktop-hibernation-vs-gaming-lockdown) to switch between a desktop profile with hibernation and a hardened profile for gaming.
+> * ⚠️ **CPU Tuning (Undervolting/Overclocking):** Utilities that write to MSRs (`/dev/cpu/*/msr`) will fail under lockdown (tuning must be set directly in the BIOS).
+> * ⚠️ **Third-Party DKMS Drivers:** Require the dedicated MOK infrastructure documented in Phase 3 to function properly.
+> * ⚠️ **Disk Encryption:** If using TPM-based auto-unlocking, ensure you have your LUKS recovery passphrase safely backed up before updating firmware or kernels.
 
 ---
 
