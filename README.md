@@ -6,7 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > [!NOTE]
-> Read this document in other languages: **[Português (Brasil)](README.pt-BR.md)**
+> Read this document in other languages: **[Português (Brasil)](README.pt-BR.md)**  
+> Also check out our companion security guide: **[CIS Hardening Guide](HARDENING.md)**
 
 A comprehensive, production-grade guide and standalone verification tool to configure **Arch Linux** in full compliance with the strict security requirements of **Easy Anti-Cheat (EAC) Linux v2** (announced by Epic Games), while preserving full support for **NVIDIA GPU drivers** and any out-of-tree [DKMS](https://wiki.archlinux.org/title/Dynamic_Kernel_Module_Support#Secure_Boot) modules (e.g., VirtualBox, v4l2loopback, Razer drivers, custom Wi-Fi/NICs).
 

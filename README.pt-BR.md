@@ -6,7 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > [!NOTE]
-> Leia este documento em inglês: **[English](README.md)**
+> Leia este documento em inglês: **[English](README.md)**  
+> Consulte também o guia complementar de segurança: **[Guia de Hardening e CIS Benchmark](HARDENING.pt-BR.md)**
 
 Este documento registra todas as configurações, referências oficiais, descobertas arquiteturais e o passo a passo integral para implantar e manter um sistema **Arch Linux** em total conformidade com os requisitos estritos do **Easy Anti-Cheat (EAC) Linux v2** (anunciado pela Epic Games em outubro de 2026), garantindo a integridade do sistema operacional com suporte completo a **placas de vídeo NVIDIA** e a qualquer módulo [DKMS](https://wiki.archlinux.org/title/Dynamic_Kernel_Module_Support#Secure_Boot) de terceiros (VirtualBox, v4l2loopback, drivers Wi-Fi/NICs proprietários, etc.).
 
