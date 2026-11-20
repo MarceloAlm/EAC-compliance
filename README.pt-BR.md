@@ -94,7 +94,7 @@ Para contornar esse isolamento mantendo a máxima segurança, adotamos uma arqui
 │                          Firmware UEFI (NVRAM)                         │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
-                         Chama shimx64.efi (Assinado MS / sbctl)
+                  Chama shimx64.efi (Assinatura Microsoft - Intocado)
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                              Shim Bootloader                           │
@@ -319,6 +319,11 @@ Antes de instalar os drivers de vídeo proprietários, configuramos os certifica
    sudo sbctl sign -s /boot/EFI/systemd/mmx64.efi
    ```
 
+   > [!WARNING]
+   > **NÃO altere nem assine o `shimx64.efi`:** O binário do preloader `shimx64.efi` deve permanecer **estritamente inalterado** com a sua assinatura original da Microsoft Corporation UEFI CA. **Nunca** execute `sbctl sign` nele. Qualquer tentativa de sobrescrever, re-assinar ou alterar o `shimx64.efi` invalidará o cabeçalho PE ou a validação do firmware, causando **falha fatal no boot** (*Access Denied / Verification Failed*).
+   >
+   > Por este motivo, ao executar `sudo sbctl verify`, o binário do Shim será reportado com `✗ /boot/EFI/systemd/shimx64.efi is not signed` (pois ele não possui assinatura da sua chave privada local `db.key`). Isso é o comportamento **normal, esperado e mandatório**: o firmware UEFI autoriza a execução do Shim através do certificado da Microsoft previamente matriculado na NVRAM com `sbctl enroll-keys --microsoft`.
+
 6. **Criar e Cadastrar o Executável `grubx64.efi` no `sbctl`:**
    O `shim` procura estritamente por um binário chamado `grubx64.efi` no mesmo diretório. Copie o binário a partir de `/usr/lib/systemd/boot/efi/systemd-bootx64.efi` para garantir que o arquivo seja originado sem assinaturas prévias, permitindo que o `sbctl sign -s` realize a assinatura digital e o registre obrigatoriamente no banco de dados (`/var/lib/sbctl/files.json`):
    ```bash
@@ -533,6 +538,7 @@ Você também pode realizar checagens pontuais nas interfaces de integridade:
 | **Status do Lockdown** | `cat /sys/kernel/security/lockdown` | `none [integrity] confidentiality` |
 | **kexec Desativado** | `cat /proc/sys/kernel/kexec_load_disabled` | `1` |
 | **Chave MOK no Kernel** | `keyctl show %:.machine` ou `cat /proc/keys` | Contém `Arch Linux Kernel Modules MOK` |
+| **Assinaturas ESP** | `sudo sbctl verify` | Todos `✓ is signed`, exceto `shimx64.efi` (`✗` esperado pela assinatura MS) |
 | **Taint do Kernel** | `cat /proc/sys/kernel/tainted` | `4096` (OOT DKMS) ou `0` (limpo) |
 | **Host Security ID** | `fwupdmgr security` | HSI-1 válido, Intel BootGuard habilitado |
 | **Driver 3D NVIDIA** | `nvidia-smi` | GPU funcional em Wayland/X11 |

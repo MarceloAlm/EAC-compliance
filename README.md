@@ -94,7 +94,7 @@ To bypass this limitation without compromising security, we establish a dual-key
 │                          Firmware UEFI (NVRAM)                         │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
-                         Executes shimx64.efi (MS / sbctl signed)
+                  Executes shimx64.efi (Microsoft Signed - Untouched)
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                              Shim Bootloader                           │
@@ -318,6 +318,11 @@ Before installing GPU drivers, set up the cryptographic MOK keys and configure t
    sudo sbctl sign -s /boot/EFI/systemd/mmx64.efi
    ```
 
+   > [!WARNING]
+   > **DO NOT alter or sign `shimx64.efi`:** The preloader binary `shimx64.efi` must remain **strictly untouched** with its original Microsoft Corporation UEFI CA signature. **Never** run `sbctl sign` on it. Any modification or additional signature layer will invalidate the PE security directory or firmware validation, resulting in **fatal boot failure** (*Access Denied / Verification Failed*).
+   >
+   > For this reason, running `sudo sbctl verify` will display `✗ /boot/EFI/systemd/shimx64.efi is not signed` (because it is not signed by your local private `db.key`). This is **normal, expected, and mandatory behavior**: UEFI firmware authorizes Shim using Microsoft's certificates enrolled in NVRAM (`sbctl enroll-keys --microsoft`).
+
 6. **Create and Register `grubx64.efi` Payload in `sbctl`:**
    Shim strictly looks for a secondary bootloader named `grubx64.efi` in the same directory. Copy the raw binary directly from `/usr/lib/systemd/boot/efi/systemd-bootx64.efi` to ensure it starts without prior signatures, allowing `sbctl sign -s` to sign it and register it into the signing database (`/var/lib/sbctl/files.json`):
    ```bash
@@ -530,6 +535,7 @@ You can also run quick manual checks against core security interfaces:
 | **Lockdown Status** | `cat /sys/kernel/security/lockdown` | `none [integrity] confidentiality` |
 | **kexec Disabled** | `cat /proc/sys/kernel/kexec_load_disabled` | `1` |
 | **MOK Keyring** | `keyctl show %:.machine` or `cat /proc/keys` | Contains `Arch Linux Kernel Modules MOK` |
+| **ESP Signatures** | `sudo sbctl verify` | All `✓ is signed`, except `shimx64.efi` (`✗` expected due to MS signature) |
 | **Kernel Taint** | `cat /proc/sys/kernel/tainted` | `4096` (OOT DKMS) or `0` (clean) |
 | **Host Security ID** | `fwupdmgr security` | HSI-1 valid, Intel BootGuard enabled |
 | **NVIDIA 3D Driver**| `nvidia-smi` | GPU operational with Wayland/X11 |
