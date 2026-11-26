@@ -191,37 +191,87 @@ else
 fi
 
 # ------------------------------------------------------------------------------
-# 7. Cadeia Shim e MOK em Runtime (/sys/firmware/efi/efivars/MokListRT*, /proc/keys)
+# 7. Assinatura do Kernel, Bootloader e Módulos (sbverify, /proc/keys, modinfo)
 # ------------------------------------------------------------------------------
-print_header "7. Cadeia de Runtime do Shim & MOK (/sys/firmware/efi/efivars/, /proc/keys)"
+print_header "7. Assinatura do Kernel, Bootloader e Módulos"
 
-# O Shim cria variáveis efivars de runtime terminadas em 'RT' legíveis pelo kernel Linux
-MOKLIST_RT_FILE=$(compgen -G "/sys/firmware/efi/efivars/MokListRT-*" | head -n 1 || true)
-if [[ -n "$MOKLIST_RT_FILE" && -f "$MOKLIST_RT_FILE" ]]; then
-    MOK_SIZE=$(wc -c < "$MOKLIST_RT_FILE")
-    report_pass "Shim operacional: Variável de runtime MokListRT ativa ($MOK_SIZE bytes exportados para o kernel)"
+# Verifica assinatura EFI do kernel EAC e do systemd-boot via sbverify (sbsigntools)
+if command -v sbverify >/dev/null 2>&1; then
+    for efi_bin in /boot/vmlinuz-linux-cachyos-eac /boot/EFI/systemd/systemd-bootx64.efi; do
+        if [[ -f "$efi_bin" ]]; then
+            SB_OUT=$(sbverify --list "$efi_bin" 2>/dev/null || true)
+            if echo "$SB_OUT" | grep -q "^signature "; then
+                report_pass "Assinatura EFI válida em $efi_bin:"
+                echo "$SB_OUT" | grep -E "subject:|issuer:| - /" | head -n 4 | sed 's/^/    /'
+            else
+                report_fail "Nenhuma assinatura EFI detectada em $efi_bin"
+            fi
+        else
+            report_info "Binário não encontrado para verificação: $efi_bin"
+        fi
+    done
 else
-    report_fail "Variável MokListRT não encontrada em /sys/firmware/efi/efivars/ (Shim não inicializado ou sem chaves)"
+    report_warn "Utilitário 'sbverify' (pacote sbsigntools) não encontrado; pulando inspeção EFI"
 fi
 
-# Consulta nativa da tabela de chaves e certificados em /proc/keys (dispensa o comando keyctl)
-if [[ -f /proc/keys ]]; then
-    # Procura pelo certificado MOK (Arch Linux Kernel Modules MOK ou nome personalizado)
-    if grep -q -E "Kernel Modules MOK" /proc/keys; then
-        report_pass "Chave MOK localizada na tabela do kernel (/proc/keys):"
-        grep -i -E "Kernel Modules MOK" /proc/keys | sed 's/^/    /'
+# Verifica imposição de assinatura de módulos pelo kernel em execução
+if [[ -r /sys/module/module/parameters/sig_enforce ]]; then
+    SIG_ENFORCE=$(cat /sys/module/module/parameters/sig_enforce)
+    if [[ "$SIG_ENFORCE" == "Y" ]]; then
+        report_pass "Imposição de assinatura de módulos ativa (sig_enforce = Y)"
     else
-        report_fail "Certificado MOK ('Kernel Modules MOK') não encontrado em /proc/keys"
+        report_fail "Imposição de assinatura de módulos desativada (sig_enforce = $SIG_ENFORCE)"
     fi
+elif grep -q "module.sig_enforce=1" /proc/cmdline 2>/dev/null; then
+    report_pass "Parâmetro 'module.sig_enforce=1' ativo na linha de comando"
+else
+    report_warn "Não foi possível confirmar module.sig_enforce ativo"
+fi
 
-    # Procura pelo keyring .machine
-    if grep -q "keyring: \.machine" /proc/keys || grep -q "\.machine" /proc/keys; then
-        report_pass "Keyring '.machine' registrado e populado no subsistema de segurança do kernel"
+# Mostra chaves de confiança embutidas no kernel (/proc/keys)
+if [[ -f /proc/keys ]]; then
+    KERNEL_KEYS=$(grep -i "asymmetric" /proc/keys | grep -E "Build time|CachyOS|EAC" || true)
+    if [[ -n "$KERNEL_KEYS" ]]; then
+        report_pass "Chaves de assinatura de kernel/módulos ativas (/proc/keys):"
+        echo "$KERNEL_KEYS" | sed 's/^/    /'
     else
-        report_warn "Keyring '.machine' não identificado explicitamente em /proc/keys"
+        report_info "Chaves assimétricas registradas em /proc/keys:"
+        grep -i "asymmetric" /proc/keys | head -n 5 | sed 's/^/    /' || true
     fi
 else
     report_fail "/proc/keys inacessível (CONFIG_KEYS desabilitado no kernel)"
+fi
+
+# Verifica assinatura dos módulos carregados no kernel atual
+if command -v modinfo >/dev/null 2>&1 && [[ -r /proc/modules ]]; then
+    TOTAL_MODS=0
+    SIGNED_MODS=0
+    UNSIGNED_LIST=""
+
+    while read -r mod_name _; do
+        ((TOTAL_MODS++))
+        SIGNER=$(modinfo -F signer "$mod_name" 2>/dev/null | head -n 1 || true)
+        if [[ -n "$SIGNER" ]]; then
+            ((SIGNED_MODS++))
+        else
+            UNSIGNED_LIST+="$mod_name "
+        fi
+    done < /proc/modules
+
+    if [[ $TOTAL_MODS -gt 0 && $SIGNED_MODS -eq $TOTAL_MODS ]]; then
+        report_pass "Todos os $SIGNED_MODS/$TOTAL_MODS módulos carregados estão assinados"
+    elif [[ $TOTAL_MODS -gt 0 ]]; then
+        report_fail "$SIGNED_MODS/$TOTAL_MODS módulos assinados (sem assinatura: $UNSIGNED_LIST)"
+    fi
+
+    # Destaca assinatura do driver NVIDIA (se carregado) e de um módulo padrão do kernel
+    for sample_mod in nvidia drm; do
+        if grep -q "^${sample_mod} " /proc/modules; then
+            MOD_SIGNER=$(modinfo -F signer "$sample_mod" 2>/dev/null | head -n 1 || true)
+            MOD_HASH=$(modinfo -F sig_hashalgo "$sample_mod" 2>/dev/null | head -n 1 || true)
+            report_info "Módulo '$sample_mod' -> signer: ${MOD_SIGNER:-<nenhum>} (hash: ${MOD_HASH:-n/a})"
+        fi
+    done
 fi
 
 # ------------------------------------------------------------------------------
