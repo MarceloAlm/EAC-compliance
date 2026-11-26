@@ -70,6 +70,75 @@ read_efivar_byte() {
 }
 
 # ------------------------------------------------------------------------------
+# 0. Ambiente do Kernel em Execução (uname)
+# ------------------------------------------------------------------------------
+KERNEL_REL=$(uname -r)
+KERNEL_ARCH=$(uname -m)
+
+print_header \
+    "0. Ambiente do Kernel em Execução" \
+    "0. Running Kernel Environment"
+
+report_info \
+    "Kernel em execução: $KERNEL_REL ($KERNEL_ARCH)" \
+    "Running kernel: $KERNEL_REL ($KERNEL_ARCH)"
+
+# Identifica a imagem do kernel em execução e verifica sua assinatura EFI
+PKGBASE=""
+RUNNING_KIMG=""
+if [ -r "/usr/lib/modules/${KERNEL_REL}/pkgbase" ]; then
+    PKGBASE=$(cat "/usr/lib/modules/${KERNEL_REL}/pkgbase")
+    if [ -f "/boot/vmlinuz-${PKGBASE}" ]; then
+        RUNNING_KIMG="/boot/vmlinuz-${PKGBASE}"
+    fi
+fi
+
+if [ -z "$RUNNING_KIMG" ] && [ -f /proc/cmdline ]; then
+    BOOT_IMG=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^BOOT_IMAGE=//p' | head -n 1 || true)
+    if [ -n "$BOOT_IMG" ] && [ -f "/boot${BOOT_IMG}" ]; then
+        RUNNING_KIMG="/boot${BOOT_IMG}"
+    elif [ -n "$BOOT_IMG" ] && [ -f "$BOOT_IMG" ]; then
+        RUNNING_KIMG="$BOOT_IMG"
+    fi
+fi
+
+if command -v sbverify >/dev/null 2>&1; then
+    if [ -n "$RUNNING_KIMG" ]; then
+        SB_RUN_OUT=$(sbverify --list "$RUNNING_KIMG" 2>/dev/null || true)
+        if printf "%s" "$SB_RUN_OUT" | grep -q "^signature "; then
+            report_pass \
+                "Assinatura EFI do kernel em execução ($RUNNING_KIMG):" \
+                "Running kernel EFI signature ($RUNNING_KIMG):"
+            printf "%s\n" "$SB_RUN_OUT" | grep -E "subject:|issuer:" | head -n 4 | sed 's/^/    /'
+        elif [ "$PKGBASE" = "linux" ] && [ -f /boot/EFI/Linux/arch-linux.efi ]; then
+            SB_UKI_OUT=$(sbverify --list /boot/EFI/Linux/arch-linux.efi 2>/dev/null || true)
+            if printf "%s" "$SB_UKI_OUT" | grep -q "^signature "; then
+                report_info \
+                    "Imagem bruta $RUNNING_KIMG sem assinatura; UKI em /boot/EFI/Linux/arch-linux.efi assinada por:" \
+                    "Raw image $RUNNING_KIMG unsigned; UKI at /boot/EFI/Linux/arch-linux.efi signed by:"
+                printf "%s\n" "$SB_UKI_OUT" | grep -E "subject:|issuer:" | head -n 4 | sed 's/^/    /'
+            else
+                report_fail \
+                    "Kernel em execução ($RUNNING_KIMG) e UKI sem assinatura EFI" \
+                    "Running kernel ($RUNNING_KIMG) and UKI have no EFI signature"
+            fi
+        else
+            report_fail \
+                "Kernel em execução ($RUNNING_KIMG) sem assinatura EFI" \
+                "Running kernel ($RUNNING_KIMG) has no EFI signature"
+        fi
+    else
+        report_info \
+            "Imagem do kernel em execução ($KERNEL_REL) não localizada em /boot para checagem de assinatura" \
+            "Running kernel image ($KERNEL_REL) not found in /boot for signature check"
+    fi
+else
+    report_warn \
+        "Utilitário 'sbverify' (pacote sbsigntools) não encontrado; não foi possível checar assinatura do kernel em execução" \
+        "Utility 'sbverify' (sbsigntools package) not found; could not check running kernel signature"
+fi
+
+# ------------------------------------------------------------------------------
 # 1. UEFI Secure Boot e Setup Mode (/sys/firmware/efi/efivars/)
 # ------------------------------------------------------------------------------
 print_header \
@@ -281,16 +350,39 @@ print_header \
     "7. Assinatura do Kernel, Bootloader e Módulos" \
     "7. Kernel, Bootloader, and Module Signatures"
 
-# Verifica assinatura EFI do kernel EAC e do systemd-boot via sbverify (sbsigntools)
+# Verifica assinatura EFI dos kernels/UKIs em /boot/ e do bootloader via sbverify (sbsigntools)
 if command -v sbverify >/dev/null 2>&1; then
-    for efi_bin in /boot/vmlinuz-linux-cachyos-eac /boot/EFI/systemd/systemd-bootx64.efi; do
+    FOUND_KERNELS=0
+    for k_bin in /boot/vmlinuz-* /boot/EFI/Linux/*.efi; do
+        if [ -f "$k_bin" ]; then
+            FOUND_KERNELS=1
+            SB_OUT=$(sbverify --list "$k_bin" 2>/dev/null || true)
+            if printf "%s" "$SB_OUT" | grep -q "^signature "; then
+                report_pass \
+                    "Assinatura EFI válida em $k_bin:" \
+                    "Valid EFI signature on $k_bin:"
+                printf "%s\n" "$SB_OUT" | grep -E "subject:|issuer:" | head -n 4 | sed 's/^/    /'
+            else
+                report_info \
+                    "Sem assinatura EFI direta em $k_bin" \
+                    "No direct EFI signature on $k_bin"
+            fi
+        fi
+    done
+    if [ "$FOUND_KERNELS" -eq 0 ]; then
+        report_info \
+            "Nenhum kernel (/boot/vmlinuz-*) ou UKI (/boot/EFI/Linux/*.efi) encontrado em /boot/" \
+            "No kernel (/boot/vmlinuz-*) or UKI (/boot/EFI/Linux/*.efi) found in /boot/"
+    fi
+
+    for efi_bin in /boot/EFI/systemd/systemd-bootx64.efi /boot/EFI/BOOT/BOOTX64.EFI; do
         if [ -f "$efi_bin" ]; then
             SB_OUT=$(sbverify --list "$efi_bin" 2>/dev/null || true)
             if printf "%s" "$SB_OUT" | grep -q "^signature "; then
                 report_pass \
                     "Assinatura EFI válida em $efi_bin:" \
                     "Valid EFI signature on $efi_bin:"
-                printf "%s\n" "$SB_OUT" | grep -E "subject:|issuer:| - /" | head -n 4 | sed 's/^/    /'
+                printf "%s\n" "$SB_OUT" | grep -E "subject:|issuer:" | head -n 4 | sed 's/^/    /'
             else
                 report_fail \
                     "Nenhuma assinatura EFI detectada em $efi_bin" \

@@ -103,29 +103,29 @@ Consulte o guia oficial do [ArchWiki: sbctl](https://wiki.archlinux.org/title/Sb
 
 ### Fase 2: Adicionar Apenas o Repositório `[cachyos]` no Arch Linux
 
-Para manter o seu sistema **Arch Linux puro** (sem substituir pacotes do sistema pelas compilações `x86-64-v3` do CachyOS), adicionamos os repositórios com o script oficial e mantemos **apenas `[cachyos]`** no final do `/etc/pacman.conf`:
+Para manter o seu sistema **Arch Linux puro** (sem adicionar repositórios `*-v3`/`*-v4` e sem substituir pacotes base do Arch pelas compilações do CachyOS), faça a instalação **manual** da chave GPG, do mirrorlist e do bloco `[cachyos]` no final do `/etc/pacman.conf`:
 
-1. **Baixar e executar o instalador de repositórios em `/tmp`:**
+1. **Importar e assinar localmente a chave GPG oficial do CachyOS:**
    ```bash
-   cd /tmp
-   curl -O https://mirror.cachyos.org/cachyos-repo.tar.xz
-   tar xvf cachyos-repo.tar.xz && cd cachyos-repo
-   sudo ./cachyos-repo.sh
+   sudo pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com
+   sudo pacman-key --lsign-key F3B607488DB35A47
    ```
-   *(Quando o script iniciar `Starting full system upgrade`, pressione **`N`** antes de ajustar o `/etc/pacman.conf` para não substituir os pacotes do Arch pelos repositórios `*-v3`).*
 
-2. **Ajustar `/etc/pacman.conf` (`sudo vim /etc/pacman.conf`):**
-   - Remova ou comente `[cachyos-v3]`, `[cachyos-core-v3]` e `[cachyos-extra-v3]`.
-   - Mova o bloco `[cachyos]` para o **final** do arquivo (abaixo de `[core]`, `[extra]` e `[multilib]`):
-     ```ini
-     [cachyos]
-     Include = /etc/pacman.d/cachyos-mirrorlist
-     ```
-
-3. **Opcional — limpeza de mirrorlists não utilizadas e retorno do `pacman` ao `core`:**
+2. **Instalar somente `cachyos-keyring` e `cachyos-mirrorlist`:**
    ```bash
-   sudo pacman -S core/pacman
-   sudo pacman -Rns cachyos-v3-mirrorlist cachyos-v4-mirrorlist
+   sudo pacman -U \
+     'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-keyring-any.pkg.tar.zst' \
+     'https://mirror.cachyos.org/repo/x86_64/cachyos/cachyos-mirrorlist-any.pkg.tar.zst'
+   ```
+
+3. **Adicionar apenas `[cachyos]` no final do `/etc/pacman.conf` (`sudo vim /etc/pacman.conf`), abaixo de `[core]`, `[extra]` e `[multilib]`:**
+   ```ini
+   [cachyos]
+   Include = /etc/pacman.d/cachyos-mirrorlist
+   ```
+
+4. **Sincronizar e atualizar a base de pacotes:**
+   ```bash
    sudo pacman -Syu
    ```
 
