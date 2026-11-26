@@ -56,19 +56,36 @@ A metodologia de **Defesa em Profundidade** pressupõe que nenhuma camada de seg
 
 ## 2. Camada 1: Firmware, Boot e Integridade de Ring-0 (A Base Consolidada)
 
-A fundação de integridade do sistema reaproveita a estrutura construída no guia principal:
+A fundação de integridade aplica as proteções de forma permanente diretamente sobre o **kernel único padrão do Arch Linux (`linux`)**, sem perfil de duplo boot:
 
 1. **UEFI Secure Boot em Modo Usuário (`SetupMode = 0`):**
-   * Garante que apenas binários validados no banco `db` ou via chaveiro MOK possam ser executados.
-   * Assinatura automática de kernels e UKIs via `sbctl`.
+   * Garante que apenas binários validados pela sua `Database Key` no banco `db` da UEFI possam ser executados.
+   * Assinatura automática de kernels e UKIs nativos do Arch Linux via `sbctl` (sem dependência de repositórios externos).
 2. **TPM 2.0 & Measured Boot:**
    * Medição estrita de PCRs (0 a 11) registrando cada transição de firmware, bootloader e initramfs.
-3. **Bloqueio de `kexec`:**
-   * Impede a sobreposição de kernels na memória RAM (`kernel.kexec_load_disabled = 1`).
-4. **Isolamento de Barramento IOMMU (`intel_iommu=on iommu=pt`):**
-   * Proteção ativa das tabelas DMAR contra ataques de hardware via DMA (Direct Memory Access) em portas PCIe ou Thunderbolt/USB4.
-5. **Kernel Lockdown (`lockdown=integrity`):**
-   * Isolamento inviolável do Ring-0, bloqueando `/dev/mem`, escrita em MSRs e qualquer módulo sem assinatura.
+3. **Alinhamento ao Host Security ID Level 1 (HSI-1 via `fwupd`):**
+   * Valida travas de hardware e firmware: proteção de escrita na SPI Flash da BIOS (`BIOSWE`/`BLE`/`SMM_BWP`), **Intel BootGuard** (ou *AMD Hardware Verified Boot*), `PK` UEFI válida, **TPM 2.0**, **UEFI Secure Boot** ativo e modo de fábrica do ME/CSME travado.
+   * Instalação e auditoria com ferramentas nativas do Arch:
+     ```bash
+     sudo pacman -S fwupd
+     fwupdmgr security
+     ```
+   * Para corrigir eventuais avisos de firmware desatualizado: `fwupdmgr refresh && fwupdmgr update`.
+4. **Bloqueio de `kexec`:**
+   * Impede a sobreposição de kernels na memória RAM (`kernel.kexec_load_disabled = 1`, aplicado permanentemente via `/etc/sysctl.d/50-security-hardening.conf` na Camada 2).
+5. **Isolamento de Barramento IOMMU (`intel_iommu=on iommu=pt`):**
+   * Proteção ativa das tabelas DMAR contra ataques de hardware via DMA (*Direct Memory Access*) em portas PCIe ou Thunderbolt/USB4 (em CPUs AMD, use `amd_iommu=on`).
+6. **Kernel Lockdown (`lockdown=integrity`):**
+   * Isolamento inviolável do Ring-0, bloqueando `/dev/mem`, escrita em MSRs, hibernação e o carregamento de módulos sem assinatura confiável.
+   * **Drivers *in-tree* (Intel/AMD):** funcionam nativamente apenas com `sbctl` + UKI.
+   * **Módulos DKMS / *out-of-tree* (ex.: NVIDIA, VirtualBox):** no Arch Linux puro, exigem a cadeia **Shim (`shimx64.efi`) + MOK** (chaveiro `.machine`) para que os módulos assinados carreguem sob `lockdown=integrity` — consulte [SHIM-MOK-REFERENCIA.pt-BR.md](SHIM-MOK-REFERENCIA.pt-BR.md).
+   * **Aplicação permanente na `cmdline` única (`/etc/cmdline.d/90-security.conf`):**
+     ```bash
+     cat << 'EOF' | sudo tee /etc/cmdline.d/90-security.conf
+     intel_iommu=on iommu=pt lockdown=integrity
+     EOF
+     sudo mkinitcpio -P
+     ```
 
 ---
 
@@ -122,6 +139,10 @@ kernel.sysrq = 176
 # 8. Desativação de Core Dumps via Kernel
 # Evita gravação de senhas ou chaves na memória em caso de falha de processos
 fs.suid_dumpable = 0
+
+# 9. Bloqueio Permanente de kexec
+# Impede carregamento em RAM de kernels não verificados sem passar pela UEFI
+kernel.kexec_load_disabled = 1
 ```
 
 Aplique imediatamente com:
@@ -153,6 +174,8 @@ Recarregue e ative:
 sudo systemctl daemon-reload
 sudo systemctl enable --now tmp.mount
 ```
+> [!NOTE]
+> `noexec` em `/tmp` pode impedir scripts de build que executam binários a partir de `/tmp` (ex.: `makepkg` se `BUILDDIR=/tmp`). Em estações de desenvolvimento, defina `BUILDDIR` fora de `/tmp` (ex.: em `/etc/makepkg.conf`) ou remova `noexec` se necessário.
 
 #### 2. Montagem Segura de `/dev/shm`:
 Adicione ao `/etc/fstab` para restringir a memória compartilhada POSIX:
@@ -231,6 +254,11 @@ net.ipv4.conf.default.log_martians = 1
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
 ```
+
+> [!NOTE]
+> **Impacto em Workstation:**
+> - `accept_ra = 0` desativa IPv6 automático via SLAAC; em redes com IPv6 via SLAAC, mantenha `1` ou configure IPv6 estático/DHCPv6.
+> - `ip_forward = 0` e `rp_filter = 1` (estrito) bloqueiam roteamento de **Docker/Podman** (*bridge*), **KVM/libvirt** (NAT) e podem afetar VPNs assimétricas (use `rp_filter = 2` se necessário).
 
 ### 5.2. Desativação de Protocolos de Rede Pouco Comuns (CIS 3.4)
 
@@ -348,6 +376,9 @@ Execute estes comandos rápidos para auditar o status das defesas aplicadas:
 | Componente | Comando de Verificação | Saída Esperada |
 | :--- | :--- | :--- |
 | **Secure Boot** | `sbctl status` | `Secure Boot: ✓ Enabled` |
+| **Host Security ID** | `fwupdmgr security` | `HSI:1` (ou superior), BootGuard/TPM ativos |
+| **Kernel Lockdown** | `cat /sys/kernel/security/lockdown` | `none [integrity] confidentiality` |
+| **kexec Bloqueado** | `cat /proc/sys/kernel/kexec_load_disabled` | `1` |
 | **ASLR** | `sysctl kernel.randomize_va_space` | `kernel.randomize_va_space = 2` |
 | **Yama ptrace** | `sysctl kernel.yama.ptrace_scope` | `kernel.yama.ptrace_scope = 2` |
 | **Reverse Path** | `sysctl net.ipv4.conf.all.rp_filter` | `net.ipv4.conf.all.rp_filter = 1` |

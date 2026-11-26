@@ -56,19 +56,36 @@ The **Defense-in-Depth** model assumes that no single security measure is impene
 
 ## 2. Layer 1: Firmware, Boot & Ring-0 Integrity (The Base Foundation)
 
-The foundational integrity layers leverage the architecture configured in the primary guide:
+The foundational integrity layers apply permanently to the **single standard Arch Linux kernel (`linux`)**, without a dual-boot profile:
 
 1. **UEFI Secure Boot in User Mode (`SetupMode = 0`):**
-   * Enforces cryptographic verification on all boot binaries via the UEFI `db` and MOK keyring.
-   * Automated signing of kernels and UKIs via `sbctl`.
+   * Enforces cryptographic verification on all boot binaries using your `Database Key` enrolled in UEFI `db`.
+   * Automated signing of native Arch Linux kernels and UKIs via `sbctl` (no external repositories required).
 2. **TPM 2.0 & Measured Boot:**
    * Strict measurement across PCRs (0 through 11), auditing firmware, bootloader stages, and initramfs transitions.
-3. **`kexec` Disabled:**
-   * Prevents loading unverified kernels in RAM (`kernel.kexec_load_disabled = 1`).
-4. **IOMMU Bus Isolation (`intel_iommu=on iommu=pt`):**
-   * Active DMAR memory table protection preventing malicious physical DMA attacks from PCIe, Thunderbolt, or USB4 devices.
-5. **Kernel Lockdown (`lockdown=integrity`):**
-   * Ring-0 barrier disabling `/dev/mem`, CPU MSR write access, and unsigned module execution.
+3. **Host Security ID Level 1 Alignment (HSI-1 via `fwupd`):**
+   * Audits hardware and firmware locks: SPI BIOS flash write protection (`BIOSWE`/`BLE`/`SMM_BWP`), **Intel BootGuard** (or *AMD Hardware Verified Boot*), valid UEFI `PK`, **TPM 2.0**, **UEFI Secure Boot** enabled, and locked ME/CSME manufacturing mode.
+   * Install and audit with native Arch tools:
+     ```bash
+     sudo pacman -S fwupd
+     fwupdmgr security
+     ```
+   * To apply available firmware updates: `fwupdmgr refresh && fwupdmgr update`.
+4. **`kexec` Disabled:**
+   * Prevents loading unverified kernels in RAM (`kernel.kexec_load_disabled = 1`, enforced permanently via `/etc/sysctl.d/50-security-hardening.conf` in Layer 2).
+5. **IOMMU Bus Isolation (`intel_iommu=on iommu=pt`):**
+   * Active DMAR memory table protection preventing malicious physical DMA attacks from PCIe, Thunderbolt, or USB4 devices (use `amd_iommu=on` on AMD CPUs).
+6. **Kernel Lockdown (`lockdown=integrity`):**
+   * Ring-0 barrier disabling `/dev/mem`, CPU MSR write access, hibernation, and loading of modules without a trusted kernel signature.
+   * **In-tree drivers (Intel/AMD):** work natively with `sbctl` + UKI alone.
+   * **DKMS / out-of-tree modules (e.g., NVIDIA, VirtualBox):** on pure Arch Linux, require the **Shim (`shimx64.efi`) + MOK** chain (`.machine` keyring) so signed modules can load under `lockdown=integrity` — see [SHIM-MOK-REFERENCIA.pt-BR.md](SHIM-MOK-REFERENCIA.pt-BR.md) *(Portuguese)*.
+   * **Permanent application on the single `cmdline` (`/etc/cmdline.d/90-security.conf`):**
+     ```bash
+     cat << 'EOF' | sudo tee /etc/cmdline.d/90-security.conf
+     intel_iommu=on iommu=pt lockdown=integrity
+     EOF
+     sudo mkinitcpio -P
+     ```
 
 ---
 
@@ -122,6 +139,10 @@ kernel.sysrq = 176
 # 8. Disable Core Dumps for SUID Programs
 # Prevents sensitive process memory (passwords, tokens) from being written to disk on crashes
 fs.suid_dumpable = 0
+
+# 9. Permanently Disable kexec
+# Prevents in-memory loading of unverified kernels bypassing UEFI
+kernel.kexec_load_disabled = 1
 ```
 
 Apply immediately with:
@@ -153,6 +174,8 @@ Reload and start:
 sudo systemctl daemon-reload
 sudo systemctl enable --now tmp.mount
 ```
+> [!NOTE]
+> `noexec` on `/tmp` can block build scripts that execute binaries from `/tmp` (e.g., `makepkg` if `BUILDDIR=/tmp`). On development workstations, set `BUILDDIR` outside `/tmp` (e.g., in `/etc/makepkg.conf`) or omit `noexec` if needed.
 
 #### 2. Secure `/dev/shm` Mount:
 Append to `/etc/fstab` to lock POSIX shared memory:
@@ -231,6 +254,11 @@ net.ipv4.conf.default.log_martians = 1
 net.ipv6.conf.all.accept_ra = 0
 net.ipv6.conf.default.accept_ra = 0
 ```
+
+> [!NOTE]
+> **Workstation Impact:**
+> - `accept_ra = 0` disables automatic IPv6 SLAAC; on networks relying on SLAAC for IPv6, keep `1` or configure static/DHCPv6 addressing.
+> - `ip_forward = 0` and `rp_filter = 1` (strict) block **Docker/Podman** (bridge), **KVM/libvirt** (NAT) routing, and may affect asymmetric VPNs (use `rp_filter = 2` if needed).
 
 ### 5.2. Blacklist Uncommon Network Protocols (CIS 3.4)
 
@@ -348,6 +376,9 @@ Run these quick inspection commands to verify active defenses:
 | Component | Audit Command | Expected Output |
 | :--- | :--- | :--- |
 | **Secure Boot** | `sbctl status` | `Secure Boot: ✓ Enabled` |
+| **Host Security ID** | `fwupdmgr security` | `HSI:1` (or higher), BootGuard/TPM active |
+| **Kernel Lockdown** | `cat /sys/kernel/security/lockdown` | `none [integrity] confidentiality` |
+| **kexec Disabled** | `cat /proc/sys/kernel/kexec_load_disabled` | `1` |
 | **ASLR** | `sysctl kernel.randomize_va_space` | `kernel.randomize_va_space = 2` |
 | **Yama ptrace** | `sysctl kernel.yama.ptrace_scope` | `kernel.yama.ptrace_scope = 2` |
 | **Reverse Path** | `sysctl net.ipv4.conf.all.rp_filter` | `net.ipv4.conf.all.rp_filter = 1` |

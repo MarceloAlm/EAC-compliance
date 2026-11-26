@@ -110,7 +110,7 @@ Quando o Linux inicializa:
    sudo sbctl sign -s /boot/EFI/systemd/grubx64.efi
    ```
 
-7. **Criar o Hook do Pacman para Atualização Automática do `systemd-boot` ([95-systemd-boot.hook](95-systemd-boot.hook)):**
+7. **Criar o Hook do Pacman para Atualização Automática do `systemd-boot` (`95-systemd-boot.hook`):**
    ```bash
    sudo mkdir -p /etc/pacman.d/hooks
    cat << 'EOF' | sudo tee /etc/pacman.d/hooks/95-systemd-boot.hook
