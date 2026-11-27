@@ -8,9 +8,7 @@
 
 > [!NOTE]
 > Leia este documento em inglês: **[English](README.md)**  
-> Consulte também o guia complementar de segurança: **[Guia de Hardening e CIS Benchmark](HARDENING.pt-BR.md)**  
-> Documentação de referência da abordagem manual antiga (Shim + MOK): **[SHIM-MOK-REFERENCIA.pt-BR.md](SHIM-MOK-REFERENCIA.pt-BR.md)**  
-> Guia de migração de Shim/MOK para `linux-cachyos-eac`: **[MIGRACAO-CACHYOS-EAC.md](MIGRACAO-CACHYOS-EAC.md)**
+> Consulte também o guia complementar de segurança: **[Guia de Hardening e CIS Benchmark](HARDENING.pt-BR.md)**
 
 Este documento registra as configurações, referências oficiais e o passo a passo completo para implantar e manter um sistema **Arch Linux** em total conformidade com os requisitos estritos do **Easy Anti-Cheat (EAC) Linux v2** utilizando o kernel oficial pré-assinado do CachyOS (**`linux-cachyos-eac`**) e o **`systemd-boot`** assinado, mantendo o kernel padrão do Arch (`linux`) intacto para uso diário (hibernação, VirtualBox/DKMS e produtividade).
 
@@ -75,9 +73,6 @@ Ao manter os dois kernels em paralelo, você evita todas as restrições do Lock
 | **Desktop / Trabalho (Padrão)** | `/boot/EFI/Linux/arch-linux.efi` (UKI assinada pelo `sbctl`) | `linux` (Arch oficial) | `nvidia-open` | Hibernação (`resume=`), VirtualBox (`virtualbox-host-dkms`), undervolt |
 | **Gaming / EAC Linux v2** | `/boot/loader/entries/cachyos-eac.conf` | `linux-cachyos-eac` (assinado pelo CachyOS) | `linux-cachyos-eac-nvidia-open` | `lockdown=integrity`, `module.sig_enforce=1`, `CachyOS EAC CA`, 100% conforme EAC v2 |
 
-> [!NOTE]
-> Para a arquitetura alternativa/histórica usando **Shim (`shimx64.efi`) + MOK local**, consulte [SHIM-MOK-REFERENCIA.pt-BR.md](SHIM-MOK-REFERENCIA.pt-BR.md).
-
 ---
 
 ## 3. Passo a Passo de Implementação Manual (Sem `eac-setup`)
@@ -133,26 +128,13 @@ Para manter o seu sistema **Arch Linux puro** (sem adicionar repositórios `*-v3
 
 ### Fase 3: Instalar Kernel EAC, Bootloader Assinado e Driver NVIDIA
 
-1. **Instale os pacotes necessários do Arch e do `[cachyos]`:**
-   ```bash
-   sudo pacman -S sbsigntools tpm2-tools efibootmgr \
-     cachyos-eac-signing-key linux-cachyos-eac systemd-boot-cachyos-signed \
-     linux-cachyos-eac-nvidia-open nvidia-open
-   ```
-   *(Para GPUs NVIDIA Turing ou mais novas — GTX 16xx / RTX 20xx+ — use `linux-cachyos-eac-nvidia-open` + `nvidia-open`. Para Maxwell/Pascal/Volta, use `linux-cachyos-eac-nvidia-580xx`. Em GPUs **AMD ou Intel**, omita os pacotes NVIDIA).*
-
-2. **Opcional — evitar erro de *headers* do `virtualbox-host-dkms` no kernel EAC:**
-   Como o `linux-cachyos-eac` não usa DKMS, o hook padrão do `pacman` exibe erro ao procurar *headers* para `*-cachyos-eac`. Para filtrar `*-cachyos-eac*` apenas no hook do DKMS sem afetar o kernel `linux` padrão:
-   ```bash
-   cat << 'EOF' | sudo tee /usr/local/bin/dkms-alpm-filter
-   #!/bin/sh
-   { grep -v -- '-cachyos-eac' || true; } | /usr/share/libalpm/scripts/dkms "$@"
-   EOF
-   sudo chmod +x /usr/local/bin/dkms-alpm-filter
-
-   sudo cp /usr/share/libalpm/hooks/70-dkms-install.hook /etc/pacman.d/hooks/70-dkms-install.hook
-   sudo sed -i 's|^Exec = /usr/share/libalpm/scripts/dkms|Exec = /usr/local/bin/dkms-alpm-filter|' /etc/pacman.d/hooks/70-dkms-install.hook
-   ```
+**Instale os pacotes necessários do Arch e do `[cachyos]`:**
+```bash
+sudo pacman -S sbsigntools tpm2-tools efibootmgr \
+  cachyos-eac-signing-key linux-cachyos-eac systemd-boot-cachyos-signed \
+  linux-cachyos-eac-nvidia-open nvidia-open
+```
+*(Para GPUs NVIDIA Turing ou mais novas — GTX 16xx / RTX 20xx+ — use `linux-cachyos-eac-nvidia-open` + `nvidia-open`. Para Maxwell/Pascal/Volta, use `linux-cachyos-eac-nvidia-580xx`. Em GPUs **AMD ou Intel**, omita os pacotes NVIDIA).*
 
 ---
 
@@ -174,15 +156,27 @@ Para manter o seu sistema **Arch Linux puro** (sem adicionar repositórios `*-v3
    ```bash
    lsblk -o NAME,FSTYPE,LABEL,PARTUUID,MOUNTPOINTS
    ```
-   Crie o arquivo `/boot/loader/entries/cachyos-eac.conf` (substituindo `<SEU-ROOT-PARTUUID>` pelo valor real; ajuste `rootfstype=` se usar `btrfs`/outro; em CPUs AMD, substitua `intel_iommu=on` por `amd_iommu=on`; em GPUs AMD/Intel, omita `nvidia_drm.modeset=1`):
-   ```bash
-   cat << 'EOF' | sudo tee /boot/loader/entries/cachyos-eac.conf
-   title   CachyOS (EAC)
-   linux   /vmlinuz-linux-cachyos-eac
-   initrd  /initramfs-linux-cachyos-eac.img
-   options root=PARTUUID=<SEU-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash nvidia_drm.modeset=1 iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
-   EOF
-   ```
+   Crie o arquivo `/boot/loader/entries/cachyos-eac.conf` conforme sua GPU/CPU (substituindo `<SEU-ROOT-PARTUUID>` pelo valor real e ajustando `rootfstype=` se usar `btrfs`/outro):
+
+   - **NVIDIA** *(CPU Intel; em CPUs AMD, substitua `intel_iommu=on` por `amd_iommu=on`)*:
+     ```bash
+     cat << 'EOF' | sudo tee /boot/loader/entries/cachyos-eac.conf
+     title   CachyOS (EAC)
+     linux   /vmlinuz-linux-cachyos-eac
+     initrd  /initramfs-linux-cachyos-eac.img
+     options root=PARTUUID=<SEU-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash nvidia_drm.modeset=1 iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
+     EOF
+     ```
+
+   - **AMD** *(CPU/GPU AMD; em CPUs Intel, substitua `amd_iommu=on` por `intel_iommu=on`)*:
+     ```bash
+     cat << 'EOF' | sudo tee /boot/loader/entries/cachyos-eac.conf
+     title   CachyOS (EAC)
+     linux   /vmlinuz-linux-cachyos-eac
+     initrd  /initramfs-linux-cachyos-eac.img
+     options root=PARTUUID=<SEU-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 amd_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
+     EOF
+     ```
 
 3. **Confirmar que o `systemd-boot` assinado está na NVRAM e verificar assinaturas:**
    ```bash

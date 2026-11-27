@@ -8,9 +8,7 @@
 
 > [!NOTE]
 > Read this document in Portuguese: **[Português (Brasil)](README.pt-BR.md)**  
-> Also check out our companion security guide: **[Hardening & CIS Benchmark Guide](HARDENING.md)**  
-> Reference documentation for the legacy manual approach (Shim + MOK): **[SHIM-MOK-REFERENCIA.pt-BR.md](SHIM-MOK-REFERENCIA.pt-BR.md)** *(Portuguese)*  
-> Migration guide from Shim/MOK to `linux-cachyos-eac`: **[MIGRACAO-CACHYOS-EAC.md](MIGRACAO-CACHYOS-EAC.md)** *(Portuguese)*
+> Also check out the companion security guide: **[Hardening & CIS Benchmark Guide](HARDENING.md)**
 
 This document records the configurations, official references, and complete step-by-step instructions to deploy and maintain an **Arch Linux** system in full compliance with the strict requirements of **Easy Anti-Cheat (EAC) Linux v2** using the official pre-signed CachyOS kernel (**`linux-cachyos-eac`**) and signed **`systemd-boot`**, while keeping the standard Arch kernel (`linux`) intact for daily use (hibernation, VirtualBox/DKMS, and productivity).
 
@@ -75,9 +73,6 @@ By keeping both kernels side by side, you avoid all Lockdown restrictions in day
 | **Desktop / Work (Default)** | `/boot/EFI/Linux/arch-linux.efi` (UKI signed by `sbctl`) | `linux` (official Arch) | `nvidia-open` | Hibernation (`resume=`), VirtualBox (`virtualbox-host-dkms`), undervolting |
 | **Gaming / EAC Linux v2** | `/boot/loader/entries/cachyos-eac.conf` | `linux-cachyos-eac` (signed by CachyOS) | `linux-cachyos-eac-nvidia-open` | `lockdown=integrity`, `module.sig_enforce=1`, `CachyOS EAC CA`, 100% EAC v2 compliant |
 
-> [!NOTE]
-> For the alternative/legacy architecture using **Shim (`shimx64.efi`) + local MOK**, see [SHIM-MOK-REFERENCIA.pt-BR.md](SHIM-MOK-REFERENCIA.pt-BR.md) *(Portuguese)*.
-
 ---
 
 ## 3. Manual Step-by-Step Implementation (Without `eac-setup`)
@@ -133,26 +128,13 @@ To keep your system **pure Arch Linux** (without adding `*-v3`/`*-v4` repositori
 
 ### Phase 3: Install EAC Kernel, Signed Bootloader, and NVIDIA Driver
 
-1. **Install the required packages from Arch and `[cachyos]`:**
-   ```bash
-   sudo pacman -S sbsigntools tpm2-tools efibootmgr \
-     cachyos-eac-signing-key linux-cachyos-eac systemd-boot-cachyos-signed \
-     linux-cachyos-eac-nvidia-open nvidia-open
-   ```
-   *(For Turing or newer NVIDIA GPUs — GTX 16xx / RTX 20xx+ — use `linux-cachyos-eac-nvidia-open` + `nvidia-open`. For Maxwell/Pascal/Volta, use `linux-cachyos-eac-nvidia-580xx`. On **AMD or Intel** GPUs, omit the NVIDIA packages).*
-
-2. **Optional — avoid `virtualbox-host-dkms` headers error on the EAC kernel:**
-   Since `linux-cachyos-eac` does not use DKMS, the default `pacman` hook displays an error when looking for headers for `*-cachyos-eac`. To filter out `*-cachyos-eac*` only in the DKMS hook without affecting the standard `linux` kernel:
-   ```bash
-   cat << 'EOF' | sudo tee /usr/local/bin/dkms-alpm-filter
-   #!/bin/sh
-   { grep -v -- '-cachyos-eac' || true; } | /usr/share/libalpm/scripts/dkms "$@"
-   EOF
-   sudo chmod +x /usr/local/bin/dkms-alpm-filter
-
-   sudo cp /usr/share/libalpm/hooks/70-dkms-install.hook /etc/pacman.d/hooks/70-dkms-install.hook
-   sudo sed -i 's|^Exec = /usr/share/libalpm/scripts/dkms|Exec = /usr/local/bin/dkms-alpm-filter|' /etc/pacman.d/hooks/70-dkms-install.hook
-   ```
+**Install the required packages from Arch and `[cachyos]`:**
+```bash
+sudo pacman -S sbsigntools tpm2-tools efibootmgr \
+  cachyos-eac-signing-key linux-cachyos-eac systemd-boot-cachyos-signed \
+  linux-cachyos-eac-nvidia-open nvidia-open
+```
+*(For Turing or newer NVIDIA GPUs — GTX 16xx / RTX 20xx+ — use `linux-cachyos-eac-nvidia-open` + `nvidia-open`. For Maxwell/Pascal/Volta, use `linux-cachyos-eac-nvidia-580xx`. On **AMD or Intel** GPUs, omit the NVIDIA packages).*
 
 ---
 
@@ -174,15 +156,27 @@ To keep your system **pure Arch Linux** (without adding `*-v3`/`*-v4` repositori
    ```bash
    lsblk -o NAME,FSTYPE,LABEL,PARTUUID,MOUNTPOINTS
    ```
-   Create `/boot/loader/entries/cachyos-eac.conf` (replacing `<YOUR-ROOT-PARTUUID>` with the actual value; adjust `rootfstype=` if using `btrfs`/other; on AMD CPUs, replace `intel_iommu=on` with `amd_iommu=on`; on AMD/Intel GPUs, omit `nvidia_drm.modeset=1`):
-   ```bash
-   cat << 'EOF' | sudo tee /boot/loader/entries/cachyos-eac.conf
-   title   CachyOS (EAC)
-   linux   /vmlinuz-linux-cachyos-eac
-   initrd  /initramfs-linux-cachyos-eac.img
-   options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash nvidia_drm.modeset=1 iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
-   EOF
-   ```
+   Create `/boot/loader/entries/cachyos-eac.conf` according to your GPU/CPU (replacing `<YOUR-ROOT-PARTUUID>` with the actual value and adjusting `rootfstype=` if using `btrfs`/other):
+
+   - **NVIDIA** *(Intel CPU; replace `intel_iommu=on` with `amd_iommu=on` on AMD CPUs)*:
+     ```bash
+     cat << 'EOF' | sudo tee /boot/loader/entries/cachyos-eac.conf
+     title   CachyOS (EAC)
+     linux   /vmlinuz-linux-cachyos-eac
+     initrd  /initramfs-linux-cachyos-eac.img
+     options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash nvidia_drm.modeset=1 iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
+     EOF
+     ```
+
+   - **AMD** *(AMD CPU/GPU; replace `amd_iommu=on` with `intel_iommu=on` on Intel CPUs)*:
+     ```bash
+     cat << 'EOF' | sudo tee /boot/loader/entries/cachyos-eac.conf
+     title   CachyOS (EAC)
+     linux   /vmlinuz-linux-cachyos-eac
+     initrd  /initramfs-linux-cachyos-eac.img
+     options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 amd_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
+     EOF
+     ```
 
 3. **Confirm signed `systemd-boot` is in NVRAM and verify signatures:**
    ```bash
