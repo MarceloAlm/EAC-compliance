@@ -151,11 +151,16 @@ sudo pacman -S sbsigntools tpm2-tools efibootmgr \
    sudo cp -f /usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed /boot/EFI/BOOT/BOOTX64.EFI
    ```
 
-2. **Identify the root partition `PARTUUID` and create `/boot/loader/entries/cachyos-eac.conf`:**
-   Check the GPT identifier of your root partition (`/`):
+2. **Check the current `cmdline`, the root partition `PARTUUID`, and create `/boot/loader/entries/cachyos-eac.conf`:**
+   Before creating the EAC entry, inspect the parameters already used by your default kernel (such as `root=`, `rootfstype=`, `rootflags=` for Btrfs, etc.) and the GPT identifier of your root partition (`/`):
    ```bash
+   cat /proc/cmdline
+   cat /etc/kernel/cmdline 2>/dev/null || true
    lsblk -o NAME,FSTYPE,LABEL,PARTUUID,MOUNTPOINTS
    ```
+   > [!TIP]
+   > Use the output above to confirm your `PARTUUID`, filesystem (`ext4`, `btrfs`, etc.), and any subvolume/encryption flags. Do **not** copy hibernation parameters (`resume=`, `resume_offset=`) into the EAC entry, as hibernation is blocked under `lockdown=integrity`.
+
    Create `/boot/loader/entries/cachyos-eac.conf` according to your GPU/CPU (replacing `<YOUR-ROOT-PARTUUID>` with the actual value and adjusting `rootfstype=` if using `btrfs`/other):
 
    - **NVIDIA** *(Intel CPU; replace `intel_iommu=on` with `amd_iommu=on` on AMD CPUs)*:
