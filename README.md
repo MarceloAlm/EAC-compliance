@@ -47,7 +47,7 @@ EAC Linux v2 replaces invasive ring-0 drivers with an on-demand **`systemd`** se
 3. **Cryptographically Signed Kernel, Bootloader, and Modules** (`module.sig_enforce=1`).
 4. **Kernel Lockdown in `integrity` Mode** (`/sys/kernel/security/lockdown` set to `[integrity]`), blocking kernel-space modifications even by the `root` user.
 5. **`kexec` Disabled** (`kernel.kexec_load_disabled = 1`), preventing injection of unverified kernels via RAM.
-6. **IOMMU Enabled** (Intel VT-d with `intel_iommu=on iommu=pt iommu.passthrough=0`, or AMD-Vi equivalent), blocking DMA attacks from physical peripherals.
+6. **IOMMU Enabled** (Intel VT-d with `intel_iommu=on iommu.passthrough=0`, or AMD-Vi equivalent), blocking DMA attacks from physical peripherals.
 7. **LSM BPF Enabled** (`lsm=landlock,lockdown,yama,integrity,bpf`), allowing the anti-cheat integrity probes to be audited via the Security Module.
 
 ### 1.1. Defense Vector Matrix & Practical System Restrictions
@@ -156,12 +156,17 @@ sudo pacman -S sbsigntools tpm2-tools efibootmgr \
    ```bash
    cat /proc/cmdline
    cat /etc/kernel/cmdline 2>/dev/null || true
+   cat /etc/cmdline.d/*.conf 2>/dev/null || true
    lsblk -o NAME,FSTYPE,LABEL,PARTUUID,MOUNTPOINTS
    ```
    > [!TIP]
-   > Use the output above to confirm your `PARTUUID`, filesystem (`ext4`, `btrfs`, etc.), and any subvolume/encryption flags. Do **not** copy hibernation parameters (`resume=`, `resume_offset=`) into the EAC entry, as hibernation is blocked under `lockdown=integrity`.
+   > **Concatenation strategy (same approach as `eac-setup`):** copy the base line obtained above (removing `initrd=...`, if present, and hibernation parameters `resume=` / `resume_offset=`) and **append** the EAC parameter block for your CPU at the end:
+   > - **Intel CPU:** `lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1`
+   > - **AMD CPU:** `lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 amd_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1`
+   >
+   > In the Linux kernel, when conflicting parameters appear on the command line, **the last occurrence wins**, ensuring EAC requirements override any earlier settings from your base `cmdline`.
 
-   Create `/boot/loader/entries/cachyos-eac.conf` according to your GPU/CPU (replacing `<YOUR-ROOT-PARTUUID>` with the actual value and adjusting `rootfstype=` if using `btrfs`/other):
+   Create `/boot/loader/entries/cachyos-eac.conf` using this concatenation or following the full templates below according to your GPU/CPU (replacing `<YOUR-ROOT-PARTUUID>` with the actual value and adjusting `rootfstype=` if using `btrfs`/other):
 
    - **NVIDIA** *(Intel CPU; replace `intel_iommu=on` with `amd_iommu=on` on AMD CPUs)*:
      ```bash
@@ -169,7 +174,7 @@ sudo pacman -S sbsigntools tpm2-tools efibootmgr \
      title   CachyOS (EAC)
      linux   /vmlinuz-linux-cachyos-eac
      initrd  /initramfs-linux-cachyos-eac.img
-     options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash nvidia_drm.modeset=1 iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
+     options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash nvidia_drm.modeset=1 lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 intel_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
      EOF
      ```
 
@@ -179,7 +184,7 @@ sudo pacman -S sbsigntools tpm2-tools efibootmgr \
      title   CachyOS (EAC)
      linux   /vmlinuz-linux-cachyos-eac
      initrd  /initramfs-linux-cachyos-eac.img
-     options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash iommu=pt lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 amd_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
+     options root=PARTUUID=<YOUR-ROOT-PARTUUID> rw rootfstype=ext4 zswap.enabled=0 quiet splash lockdown=integrity lsm=landlock,lockdown,yama,integrity,bpf iommu.passthrough=0 amd_iommu=on module.sig_enforce=1 sysctl.kernel.kexec_load_disabled=1
      EOF
      ```
 
@@ -190,6 +195,19 @@ sudo pacman -S sbsigntools tpm2-tools efibootmgr \
    sudo sbverify --list /boot/EFI/systemd/systemd-bootx64.efi
    ```
    *(Both should display `subject: /CN=CachyOS EAC Signing ...` issued by `issuer: /CN=CachyOS EAC CA/O=CachyOS`).*
+
+#### Summary of EAC Options and Precedence (*Last-Wins*)
+
+When appended to the end of the `cmdline`, the EAC parameters **override or invalidate** earlier options from your default boot (for details on defense vectors and practical system restrictions, see [Section 1.1](#11-defense-vector-matrix--practical-system-restrictions)):
+
+| EAC Option (appended) | What it overrides / invalidates |
+|---|---|
+| `iommu.passthrough=0` | `iommu=pt` (`iommu.passthrough=1`) |
+| `intel_iommu=on` / `amd_iommu=on` | `intel_iommu=off` / `amd_iommu=off` |
+| `lsm=landlock,lockdown,yama,integrity,bpf` | Any earlier `lsm=` list |
+| `lockdown=integrity` | `lockdown=none` and hibernation parameters (`resume=` / `resume_offset=`) |
+| `module.sig_enforce=1` | `module.sig_enforce=0` (unsigned/DKMS modules) |
+| `sysctl.kernel.kexec_load_disabled=1` | Default allowing `systemctl kexec` |
 
 ---
 
